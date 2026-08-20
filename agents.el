@@ -514,10 +514,28 @@ Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent."
                                (cons 'buffer b)))
              bufs))))
 
+(defvar-local agents--sidebar-marks nil
+  "Marked sidebar targets, in the same form as the agents-target property.")
+
+(defun agents--sidebar-goto-line (line)
+  (goto-char (point-min))
+  (forward-line (1- line)))
+
 (defun agents--sidebar-render ()
   (when-let* ((buf (get-buffer "*agents-sidebar*")))
     (with-current-buffer buf
+      (setq agents--sidebar-marks
+            (cl-remove-if (lambda (target)
+                            (pcase target
+                              (`(buffer . ,b) (not (buffer-live-p b)))
+                              (_ nil)))
+                          agents--sidebar-marks))
       (let* ((inhibit-read-only t)
+             (line (line-number-at-pos))
+             (window-lines
+              (mapcar (lambda (w)
+                        (cons w (line-number-at-pos (window-point w))))
+                      (get-buffer-window-list buf nil t)))
              (current (and (bound-and-true-p tab-bar-mode)
                            (alist-get 'name (tab-bar--current-tab))))
              (current-buf (and current (agents--workspace-buffer current))))
@@ -528,6 +546,7 @@ Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent."
             (let* ((currentp (pcase target
                                (`(tab . ,name) (equal name current))
                                (`(buffer . ,b) (eq b current-buf))))
+                   (markedp (member target agents--sidebar-marks))
                    (icon (pcase state
                            ('waiting (propertize "●" 'face 'warning))
                            ('done (propertize "✓" 'face 'success))
@@ -535,11 +554,20 @@ Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent."
                            ('exited "✗")
                            (_ " "))))
               (insert (propertize
-                       (format "%s %s %s\n" (if currentp ">" " ") icon label)
+                       (format "%s%s %s %s\n"
+                               (if markedp
+                                   (propertize "*" 'face 'warning)
+                                 " ")
+                               (if currentp ">" " ") icon label)
                        'agents-target target
                        'face (and currentp 'highlight)
                        'mouse-face 'highlight)))))
-        (goto-char (point-min))))))
+        (agents--sidebar-goto-line line)
+        (dolist (wl window-lines)
+          (set-window-point (car wl)
+                            (save-excursion
+                              (agents--sidebar-goto-line (cdr wl))
+                              (point))))))))
 
 (defun agents--sidebar-show ()
   (let ((buf (get-buffer-create "*agents-sidebar*")))
@@ -605,16 +633,98 @@ Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent."
   (mouse-set-point event)
   (agents-sidebar-select))
 
+(defun agents--sidebar-target-at-point ()
+  (get-text-property (point) 'agents-target))
+
+(defun agents-sidebar-mark ()
+  "Mark the workspace at point and move to the next line."
+  (interactive)
+  (when-let* ((target (agents--sidebar-target-at-point)))
+    (cl-pushnew target agents--sidebar-marks :test #'equal)
+    (agents--sidebar-render))
+  (forward-line 1))
+
+(defun agents-sidebar-unmark ()
+  "Unmark the workspace at point and move to the next line."
+  (interactive)
+  (when-let* ((target (agents--sidebar-target-at-point)))
+    (setq agents--sidebar-marks
+          (cl-remove target agents--sidebar-marks :test #'equal))
+    (agents--sidebar-render))
+  (forward-line 1))
+
+(defun agents-sidebar-unmark-all ()
+  "Remove all sidebar marks."
+  (interactive)
+  (setq agents--sidebar-marks nil)
+  (agents--sidebar-render))
+
+(defun agents-sidebar-rename ()
+  "Rename the workspace at point."
+  (interactive)
+  (pcase (agents--sidebar-target-at-point)
+    (`(buffer . ,buf)
+     (with-current-buffer buf
+       (rename-buffer
+        (read-string (format "Rename %s to: " (buffer-name)) (buffer-name))
+        t))
+     (agents--sidebar-sync))
+    (`(tab . ,name)
+     (tab-bar-rename-tab-by-name
+      name (read-string (format "Rename %s to: " name) name))
+     (agents--sidebar-sync))
+    (_ (user-error "No workspace on this line"))))
+
+(defun agents-sidebar-delete ()
+  "Delete marked workspaces, or the one at point when none are marked.
+Session workspaces are killed; plain tabs are closed."
+  (interactive)
+  (let* ((targets (or agents--sidebar-marks
+                      (when-let* ((target (agents--sidebar-target-at-point)))
+                        (list target))))
+         (labels (mapcar (lambda (target)
+                           (pcase target
+                             (`(buffer . ,b) (buffer-name b))
+                             (`(tab . ,name) name)))
+                         targets)))
+    (unless targets (user-error "No workspace on this line"))
+    (when (yes-or-no-p (format "Delete %d workspace%s (%s)? "
+                               (length targets)
+                               (if (cdr targets) "s" "")
+                               (string-join labels ", ")))
+      (dolist (target targets)
+        (pcase target
+          (`(buffer . ,buf)
+           (when (buffer-live-p buf)
+             (let ((kill-buffer-query-functions nil))
+               (kill-buffer buf))))
+          (`(tab . ,name)
+           (let ((names (agents--tab-names)))
+             (when (and (member name names) (> (length names) 1))
+               (ignore-errors (tab-bar-close-tab-by-name name)))))))
+      (setq agents--sidebar-marks nil)
+      (agents--sidebar-sync))))
+
 (define-key agents-sidebar-mode-map (kbd "RET") #'agents-sidebar-select)
 (define-key agents-sidebar-mode-map [mouse-1] #'agents-sidebar-mouse-select)
 (define-key agents-sidebar-mode-map "o" #'agents-sidebar-open)
 (define-key agents-sidebar-mode-map "q" #'agents-sidebar-toggle)
+(define-key agents-sidebar-mode-map "R" #'agents-sidebar-rename)
+(define-key agents-sidebar-mode-map "m" #'agents-sidebar-mark)
+(define-key agents-sidebar-mode-map "u" #'agents-sidebar-unmark)
+(define-key agents-sidebar-mode-map "U" #'agents-sidebar-unmark-all)
+(define-key agents-sidebar-mode-map "D" #'agents-sidebar-delete)
 (with-eval-after-load 'evil
   (evil-set-initial-state 'agents-sidebar-mode 'normal)
   (evil-define-key 'normal agents-sidebar-mode-map
     (kbd "RET") #'agents-sidebar-select
     "o" #'agents-sidebar-open
-    "q" #'agents-sidebar-toggle))
+    "q" #'agents-sidebar-toggle
+    "R" #'agents-sidebar-rename
+    "m" #'agents-sidebar-mark
+    "u" #'agents-sidebar-unmark
+    "U" #'agents-sidebar-unmark-all
+    "D" #'agents-sidebar-delete))
 
 (unless noninteractive (agents-setup))
 

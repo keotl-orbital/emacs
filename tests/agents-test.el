@@ -266,5 +266,78 @@
   (should (eq (lookup-key agents-sidebar-mode-map "o") 'agents-sidebar-open))
   (should (commandp 'agents-sidebar-open)))
 
+(defmacro agents-test--with-sidebar (&rest body)
+  `(unwind-protect
+       (progn
+         (get-buffer-create "*agents-sidebar*")
+         (with-current-buffer "*agents-sidebar*"
+           (agents-sidebar-mode))
+         (agents--sidebar-render)
+         (with-current-buffer "*agents-sidebar*" ,@body))
+     (kill-buffer "*agents-sidebar*")))
+
+(ert-deftest agents-sidebar-dired-bindings ()
+  (dolist (pair '(("R" . agents-sidebar-rename)
+                  ("m" . agents-sidebar-mark)
+                  ("u" . agents-sidebar-unmark)
+                  ("U" . agents-sidebar-unmark-all)
+                  ("D" . agents-sidebar-delete)))
+    (should (eq (lookup-key agents-sidebar-mode-map (car pair)) (cdr pair)))))
+
+(ert-deftest agents-sidebar-mark-and-unmark ()
+  (agents-test--with-state-dir
+   (agents-test--with-vterm-buffer buf t
+     (agents-test--with-sidebar
+      (goto-char (point-min))
+      (search-forward (buffer-name buf))
+      (beginning-of-line)
+      (agents-sidebar-mark)
+      (should (equal agents--sidebar-marks (list (cons 'buffer buf))))
+      (should (string-match-p (concat "^\\*.*" (regexp-quote (buffer-name buf)))
+                              (buffer-string)))
+      (goto-char (point-min))
+      (search-forward (buffer-name buf))
+      (agents-sidebar-unmark)
+      (should-not agents--sidebar-marks)))))
+
+(ert-deftest agents-sidebar-delete-marked-kills-session ()
+  (agents-test--with-state-dir
+   (let ((buf (generate-new-buffer "*claude*")))
+     (with-current-buffer buf
+       (setq major-mode 'vterm-mode)
+       (start-process "agents-test-proc" buf "cat")
+       (set-process-query-on-exit-flag (get-buffer-process buf) nil))
+     (agents-test--with-sidebar
+      (setq agents--sidebar-marks (list (cons 'buffer buf)))
+      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) t)))
+        (agents-sidebar-delete))
+      (should-not (buffer-live-p buf))
+      (should-not agents--sidebar-marks)))))
+
+(ert-deftest agents-sidebar-delete-uses-point-when-unmarked ()
+  (agents-test--with-state-dir
+   (let ((buf (generate-new-buffer "*claude*")))
+     (with-current-buffer buf
+       (setq major-mode 'vterm-mode)
+       (start-process "agents-test-proc" buf "cat")
+       (set-process-query-on-exit-flag (get-buffer-process buf) nil))
+     (agents-test--with-sidebar
+      (goto-char (point-min))
+      (search-forward (buffer-name buf))
+      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) t)))
+        (agents-sidebar-delete))
+      (should-not (buffer-live-p buf))))))
+
+(ert-deftest agents-sidebar-rename-session ()
+  (agents-test--with-state-dir
+   (agents-test--with-vterm-buffer buf t
+     (agents-test--with-sidebar
+      (goto-char (point-min))
+      (search-forward (buffer-name buf))
+      (cl-letf (((symbol-function 'read-string)
+                 (lambda (&rest _) "*claude:renamed*")))
+        (agents-sidebar-rename))
+      (should (equal (buffer-name buf) "*claude:renamed*"))))))
+
 (provide 'agents-test)
 ;;; agents-test.el ends here

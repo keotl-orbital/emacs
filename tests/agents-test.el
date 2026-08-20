@@ -38,5 +38,50 @@
   (should-not (agents--badge-text 0))
   (should (equal (agents--badge-text 2) "●2")))
 
+(defmacro agents-test--with-state-dir (&rest body)
+  `(let ((agents-state-directory
+          (file-name-as-directory (make-temp-file "agents-test" t)))
+         (agents--states (make-hash-table :test 'equal)))
+     (unwind-protect (progn ,@body)
+       (delete-directory agents-state-directory t))))
+
+(defun agents-test--write-state (id content)
+  (let ((file (expand-file-name id agents-state-directory)))
+    (with-temp-file file (insert content))
+    file))
+
+(ert-deftest agents-handle-state-file-valid ()
+  (agents-test--with-state-dir
+   (let ((file (agents-test--write-state "sess-1" "waiting\n")))
+     (should (eq (agents--handle-state-file file) 'waiting))
+     (let ((info (gethash "sess-1" agents--states)))
+       (should (eq (plist-get info :state) 'waiting))
+       (should (numberp (plist-get info :since)))))))
+
+(ert-deftest agents-handle-state-file-keeps-since-when-unchanged ()
+  (agents-test--with-state-dir
+   (let ((file (agents-test--write-state "sess-1" "working")))
+     (agents--handle-state-file file)
+     (let ((since (plist-get (gethash "sess-1" agents--states) :since)))
+       (agents--handle-state-file file)
+       (should (equal since
+                      (plist-get (gethash "sess-1" agents--states) :since)))))))
+
+(ert-deftest agents-handle-state-file-malformed-removes-entry ()
+  (agents-test--with-state-dir
+   (agents--handle-state-file (agents-test--write-state "sess-1" "waiting"))
+   (agents--handle-state-file (agents-test--write-state "sess-1" "junk"))
+   (should-not (gethash "sess-1" agents--states))))
+
+(ert-deftest agents-sweep-stale-files ()
+  (agents-test--with-state-dir
+   (agents-test--write-state "dead-session" "waiting")
+   (agents--sweep-stale-files)
+   (should-not (file-exists-p
+                (expand-file-name "dead-session" agents-state-directory)))))
+
+(ert-deftest agents-new-session-id-unique ()
+  (should-not (equal (agents--new-session-id) (agents--new-session-id))))
+
 (provide 'agents-test)
 ;;; agents-test.el ends here

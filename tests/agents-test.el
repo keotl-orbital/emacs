@@ -393,5 +393,80 @@
       (tab-bar-rename-tab "")
       (unless had (tab-bar-mode -1)))))
 
+(defmacro agents-test--with-snapshot-file (&rest body)
+  `(let ((agents-snapshot-file (make-temp-file "agents-snapshot")))
+     (unwind-protect (progn ,@body)
+       (ignore-errors (delete-file agents-snapshot-file)))))
+
+(defun agents-test--fake-app-buffer (name)
+  (let ((buf (get-buffer-create name)))
+    (with-current-buffer buf (setq major-mode 'vterm-mode))
+    buf))
+
+(ert-deftest agents-workspace-apps-discovery ()
+  (let ((bufs (mapcar #'agents-test--fake-app-buffer
+                      '("*feat:claude*" "*feat:vterm*" "*other:claude*"))))
+    (unwind-protect
+        (let ((apps (agents--workspace-apps "feat")))
+          (should (member "claude" apps))
+          (should (member "vterm" apps))
+          (should (= (length apps) 2)))
+      (mapc #'kill-buffer bufs))))
+
+(ert-deftest agents-snapshot-roundtrip ()
+  (agents-test--with-snapshot-file
+   (let ((agents--workspaces (list (cons "feat" (expand-file-name "~/"))))
+         (tab-bar-mode nil)
+         (buf (agents-test--fake-app-buffer "*feat:claude*")))
+     (unwind-protect
+         (progn
+           (agents-workspaces-save)
+           (let ((snapshot (agents--snapshot-read)))
+             (should (equal (alist-get 'workspaces snapshot) agents--workspaces))
+             (should (equal (cdr (assoc "feat" (alist-get 'apps snapshot)))
+                            '("claude")))
+             (should-not (alist-get 'layouts snapshot))))
+       (kill-buffer buf)))))
+
+(ert-deftest agents-workspaces-restore-merges-and-skips ()
+  (agents-test--with-snapshot-file
+   (let ((had tab-bar-mode)
+         (missing (make-temp-file "agents-gone" t)))
+     (delete-directory missing)
+     (unwind-protect
+         (progn
+           (let ((agents--workspaces
+                  (list (cons "kept" (expand-file-name "~/"))
+                        (cons "gone" missing))))
+             (agents-workspaces-save))
+           (let ((agents--workspaces (list (cons "kept" "/elsewhere/"))))
+             (agents-workspaces-restore)
+             (should (equal (agents--workspace-root "kept") "/elsewhere/"))
+             (should-not (assoc "gone" agents--workspaces))
+             (should (= (length agents--workspaces) 1))))
+       (tab-bar-rename-tab "")
+       (unless had (tab-bar-mode -1))))))
+
+(ert-deftest agents-workspaces-restore-restores-registry ()
+  (agents-test--with-snapshot-file
+   (let ((had tab-bar-mode))
+     (unwind-protect
+         (progn
+           (let ((agents--workspaces (list (cons "feat" (expand-file-name "~/")))))
+             (agents-workspaces-save))
+           (let ((agents--workspaces nil))
+             (agents-workspaces-restore)
+             (should (equal (agents--workspace-root "feat")
+                            (expand-file-name "~/")))))
+       (dolist (name (agents--tab-names))
+         (when (string-prefix-p "ws:" name)
+           (ignore-errors (tab-bar-close-tab-by-name name))))
+       (tab-bar-rename-tab "")
+       (unless had (tab-bar-mode -1))))))
+
+(ert-deftest agents-workspaces-restore-errors-without-snapshot ()
+  (let ((agents-snapshot-file "/nonexistent/agents-snapshot.eld"))
+    (should-error (agents-workspaces-restore) :type 'user-error)))
+
 (provide 'agents-test)
 ;;; agents-test.el ends here

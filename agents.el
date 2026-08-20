@@ -1,5 +1,45 @@
 ;;; agents.el --- Overview of vterm agent sessions -*- lexical-binding: t; -*-
 
+;;; Commentary:
+
+;; Workspaces are created intentionally with `agents-workspace-create',
+;; which registers a NAME -> root DIRECTORY pair.  They appear in the
+;; sidebar (`agents-sidebar-toggle') next to `main'; switching to one
+;; creates its tab lazily, landing in a dired of the root.  A
+;; workspace's sidebar icon reflects the most urgent Claude hook state
+;; among vterm sessions whose `default-directory' is under its root.
+;;
+;; Build variants of the create command by computing a directory and
+;; calling `agents-workspace-create' from Lisp.  Example: create a git
+;; worktree and register it, with the worktree location configured
+;; per-project through .dir-locals.el:
+;;
+;;   (defvar my-worktree-directory ".worktrees/"
+;;     "Where to create worktrees, relative to the project root.")
+;;   (put 'my-worktree-directory 'safe-local-variable #'stringp)
+;;
+;;   (defun my/workspace-create-worktree (branch)
+;;     "Create a git worktree for BRANCH and register it as a workspace."
+;;     (interactive "sBranch: ")
+;;     (let* ((root (project-root (project-current t)))
+;;            (dir (expand-file-name
+;;                  (concat my-worktree-directory branch) root)))
+;;       (unless (file-directory-p dir)
+;;         (let ((default-directory root))
+;;           (shell-command
+;;            (format "git worktree add %s -b %s"
+;;                    (shell-quote-argument dir)
+;;                    (shell-quote-argument branch)))))
+;;       (agents-workspace-create branch dir)))
+;;
+;;   ;; ~/Documents/project100x/.dir-locals.el
+;;   ((nil . ((my-worktree-directory . ".worktrees/"))))
+;;
+;; The dir-local takes effect when the command is invoked from a buffer
+;; inside that project (the defvar provides the default elsewhere).
+
+;;; Code:
+
 (require 'cl-lib)
 (require 'subr-x)
 (require 'tabulated-list)
@@ -105,11 +145,6 @@ Use FALLBACK (typically the process name) for generic \"*vterm*\" buffers."
     (ignore-errors
       (delete-file (expand-file-name agents--session-id agents-state-directory)))
     (remhash agents--session-id agents--states)
-    (when (bound-and-true-p tab-bar-mode)
-      (let ((tab-name (agents--workspace-tab-name agents--session-id))
-            (names (agents--tab-names)))
-        (when (and (member tab-name names) (> (length names) 1))
-          (ignore-errors (tab-bar-close-tab-by-name tab-name)))))
     (run-at-time 0 nil #'agents--after-state-change)))
 
 (defun agents-setup ()
@@ -396,28 +431,43 @@ Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent."
 (defvar agents--workspace-indicator "")
 (put 'agents--workspace-indicator 'risky-local-variable t)
 
-(defun agents--workspace-tab-name (session-id)
-  (concat "agent:" session-id))
+(defvar agents--workspaces nil
+  "Alist of workspace NAME to root DIRECTORY, in creation order.")
 
-(defun agents--workspace-session-id (tab-name)
-  (and (string-prefix-p "agent:" tab-name)
-       (substring tab-name (length "agent:"))))
+(defun agents--workspace-tab-name (name)
+  (concat "ws:" name))
+
+(defun agents--workspace-name (tab-name)
+  (and (string-prefix-p "ws:" tab-name)
+       (substring tab-name (length "ws:"))))
+
+(defun agents--plain-tab-p (tab-name)
+  (not (or (agents--workspace-name tab-name)
+           (string-prefix-p "agent:" tab-name))))
 
 (defun agents--tab-names ()
   (mapcar (lambda (tab) (alist-get 'name tab))
           (funcall tab-bar-tabs-function)))
 
-(defun agents--workspace-buffer (tab-name)
-  "Return the session buffer whose workspace tab is TAB-NAME, or nil."
-  (when-let* ((id (agents--workspace-session-id tab-name)))
-    (cl-find id (agents--vterm-buffers)
-             :key (lambda (b) (buffer-local-value 'agents--session-id b))
-             :test #'equal)))
+(defun agents--workspace-root (name)
+  (alist-get name agents--workspaces nil nil #'equal))
 
-(defun agents--workspace-label (tab-name)
-  (if-let* ((buf (agents--workspace-buffer tab-name)))
-      (buffer-name buf)
-    tab-name))
+(defun agents--workspace-state (root)
+  "Most urgent hook state among sessions rooted under ROOT, or nil."
+  (let* ((root (file-name-as-directory (expand-file-name root)))
+         (states
+          (delq nil
+                (mapcar
+                 (lambda (b)
+                   (let ((state (agents--buffer-state b))
+                         (dir (expand-file-name
+                               (buffer-local-value 'default-directory b))))
+                     (and (string-prefix-p root (file-name-as-directory dir))
+                          (memq state '(waiting done working))
+                          state)))
+                 (agents--vterm-buffers)))))
+    (car (sort states (lambda (a b) (< (agents--state-sort-key a)
+                                       (agents--state-sort-key b)))))))
 
 (defun agents--ensure-tab-bar ()
   (unless tab-bar-mode
@@ -425,32 +475,51 @@ Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent."
     (tab-bar-mode 1))
   (let ((names (agents--tab-names)))
     (when (and (= (length names) 1)
-               (not (agents--workspace-session-id (car names)))
+               (agents--plain-tab-p (car names))
                (not (equal (car names) agents-workspace-main-name)))
       (tab-bar-rename-tab agents-workspace-main-name))))
 
 (defun agents--update-workspace-indicator ()
   (let* ((name (and (bound-and-true-p tab-bar-mode)
                     (alist-get 'name (tab-bar--current-tab))))
-         (label (and name (agents--workspace-session-id name)
-                     (agents--workspace-label name))))
+         (label (and name (agents--workspace-name name))))
     (setq agents--workspace-indicator (if label (format " [%s]" label) ""))
     (force-mode-line-update t)))
 
-(defun agents--workspace-open (buf)
-  "Switch to BUF's workspace tab, creating it if needed."
+(defun agents--workspace-goto (name)
+  "Switch to workspace NAME, creating its tab (landing in dired) if needed."
   (agents--ensure-tab-bar)
-  (let* ((id (with-current-buffer buf
-               (or agents--session-id
-                   (setq-local agents--session-id (agents--new-session-id)))))
-         (tab-name (agents--workspace-tab-name id)))
+  (let ((tab-name (agents--workspace-tab-name name)))
     (if (member tab-name (agents--tab-names))
         (tab-bar-switch-to-tab tab-name)
       (tab-bar-new-tab)
       (tab-bar-rename-tab tab-name)
       (delete-other-windows)
-      (switch-to-buffer buf))
-    (agents--sidebar-sync)))
+      (dired (or (agents--workspace-root name) default-directory))))
+  (agents--sidebar-sync))
+
+(defun agents-workspace-create (name directory)
+  "Register workspace NAME rooted at DIRECTORY.
+It appears in the sidebar; switch to it from there or with
+`agents-workspace-switch'.  Callable from Lisp to build variant
+commands that compute DIRECTORY first (see Commentary)."
+  (interactive
+   (list (read-string "Workspace name: ")
+         (read-directory-name
+          "Root directory: "
+          (or (when-let* ((pr (project-current))) (project-root pr))
+              default-directory))))
+  (when (string-empty-p name)
+    (user-error "Workspace name cannot be empty"))
+  (when (assoc name agents--workspaces)
+    (user-error "Workspace %s already exists" name))
+  (setq agents--workspaces
+        (append agents--workspaces
+                (list (cons name (file-name-as-directory
+                                  (expand-file-name directory))))))
+  (agents--sidebar-sync)
+  (message "Workspace %s created; switch to it from the sidebar" name)
+  name)
 
 (defun agents-workspace-next ()
   (interactive)
@@ -465,34 +534,16 @@ Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent."
   (agents--sidebar-sync))
 
 (defun agents-workspace-switch ()
-  "Pick a workspace: plain tabs (main etc.) or any vterm session."
+  "Pick a workspace: plain tabs (main etc.) or a registered workspace."
   (interactive)
   (agents--ensure-tab-bar)
-  (let* ((plain (cl-remove-if #'agents--workspace-session-id (agents--tab-names)))
-         (candidates (append plain (mapcar #'buffer-name (agents--vterm-buffers))))
-         (completion-extra-properties
-          (list :annotation-function
-                (lambda (cand)
-                  (when-let* ((buf (get-buffer cand)))
-                    (when (provided-mode-derived-p
-                           (buffer-local-value 'major-mode buf) 'vterm-mode)
-                      (format "  %s" (agents--buffer-state buf)))))))
+  (let* ((plain (cl-remove-if-not #'agents--plain-tab-p (agents--tab-names)))
+         (candidates (append plain (mapcar #'car agents--workspaces)))
          (choice (completing-read "Workspace: " candidates nil t)))
-    (let ((buf (get-buffer choice)))
-      (if (and buf (provided-mode-derived-p
-                    (buffer-local-value 'major-mode buf) 'vterm-mode))
-          (agents--workspace-open buf)
-        (tab-bar-switch-to-tab choice)
-        (agents--sidebar-sync)))))
-
-(defun agents-open-workspace ()
-  "Open the workspace of the dashboard session at point."
-  (interactive)
-  (agents--workspace-open (agents--target-buffer)))
-
-(define-key agents-dashboard-mode-map "w" #'agents-open-workspace)
-(with-eval-after-load 'evil
-  (evil-define-key 'normal agents-dashboard-mode-map "w" #'agents-open-workspace))
+    (if (assoc choice agents--workspaces)
+        (agents--workspace-goto choice)
+      (tab-bar-switch-to-tab choice)
+      (agents--sidebar-sync))))
 
 ;; Sidebar
 
@@ -502,17 +553,16 @@ Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent."
   (setq cursor-in-non-selected-windows nil))
 
 (defun agents--sidebar-rows ()
-  "Return (LABEL STATE TARGET) rows: plain tabs first, then sessions by name."
+  "Return (LABEL STATE TARGET) rows: plain tabs first, then workspaces."
   (let* ((tabs (and (bound-and-true-p tab-bar-mode) (agents--tab-names)))
-         (plain (or (cl-remove-if #'agents--workspace-session-id tabs)
-                    (list agents-workspace-main-name)))
-         (bufs (sort (agents--vterm-buffers)
-                     (lambda (a b) (string< (buffer-name a) (buffer-name b))))))
+         (plain (or (cl-remove-if-not #'agents--plain-tab-p tabs)
+                    (list agents-workspace-main-name))))
     (append
      (mapcar (lambda (name) (list name nil (cons 'tab name))) plain)
-     (mapcar (lambda (b) (list (buffer-name b) (agents--buffer-state b)
-                               (cons 'buffer b)))
-             bufs))))
+     (mapcar (lambda (ws)
+               (list (car ws) (agents--workspace-state (cdr ws))
+                     (cons 'ws (car ws))))
+             agents--workspaces))))
 
 (defvar-local agents--sidebar-marks nil
   "Marked sidebar targets, in the same form as the agents-target property.")
@@ -527,7 +577,8 @@ Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent."
       (setq agents--sidebar-marks
             (cl-remove-if (lambda (target)
                             (pcase target
-                              (`(buffer . ,b) (not (buffer-live-p b)))
+                              (`(ws . ,name)
+                               (not (assoc name agents--workspaces)))
                               (_ nil)))
                           agents--sidebar-marks))
       (let* ((inhibit-read-only t)
@@ -537,15 +588,16 @@ Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent."
                         (cons w (line-number-at-pos (window-point w))))
                       (get-buffer-window-list buf nil t)))
              (current (and (bound-and-true-p tab-bar-mode)
-                           (alist-get 'name (tab-bar--current-tab))))
-             (current-buf (and current (agents--workspace-buffer current))))
+                           (alist-get 'name (tab-bar--current-tab)))))
         (erase-buffer)
         (insert (propertize "workspaces\n" 'face 'mode-line-emphasis))
         (dolist (row (agents--sidebar-rows))
           (pcase-let ((`(,label ,state ,target) row))
             (let* ((currentp (pcase target
                                (`(tab . ,name) (equal name current))
-                               (`(buffer . ,b) (eq b current-buf))))
+                               (`(ws . ,name)
+                                (equal (agents--workspace-tab-name name)
+                                       current))))
                    (markedp (member target agents--sidebar-marks))
                    (icon (pcase state
                            ('waiting (propertize "●" 'face 'warning))
@@ -609,7 +661,7 @@ Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent."
        (unless (equal name (alist-get 'name (tab-bar--current-tab)))
          (tab-bar-switch-to-tab name))
        (agents--sidebar-sync))
-      (`(buffer . ,buf) (agents--workspace-open buf)))
+      (`(ws . ,name) (agents--workspace-goto name)))
     t))
 
 (defun agents-sidebar-select ()
@@ -663,11 +715,17 @@ Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent."
   "Rename the workspace at point."
   (interactive)
   (pcase (agents--sidebar-target-at-point)
-    (`(buffer . ,buf)
-     (with-current-buffer buf
-       (rename-buffer
-        (read-string (format "Rename %s to: " (buffer-name)) (buffer-name))
-        t))
+    (`(ws . ,name)
+     (let ((new (read-string (format "Rename %s to: " name) name)))
+       (when (assoc new agents--workspaces)
+         (user-error "Workspace %s already exists" new))
+       (setq agents--workspaces
+             (mapcar (lambda (ws)
+                       (if (equal (car ws) name) (cons new (cdr ws)) ws))
+                     agents--workspaces))
+       (when (member (agents--workspace-tab-name name) (agents--tab-names))
+         (tab-bar-rename-tab-by-name (agents--workspace-tab-name name)
+                                     (agents--workspace-tab-name new))))
      (agents--sidebar-sync))
     (`(tab . ,name)
      (tab-bar-rename-tab-by-name
@@ -684,7 +742,7 @@ Session workspaces are killed; plain tabs are closed."
                         (list target))))
          (labels (mapcar (lambda (target)
                            (pcase target
-                             (`(buffer . ,b) (buffer-name b))
+                             (`(ws . ,name) name)
                              (`(tab . ,name) name)))
                          targets)))
     (unless targets (user-error "No workspace on this line"))
@@ -694,10 +752,12 @@ Session workspaces are killed; plain tabs are closed."
                                (string-join labels ", ")))
       (dolist (target targets)
         (pcase target
-          (`(buffer . ,buf)
-           (when (buffer-live-p buf)
-             (let ((kill-buffer-query-functions nil))
-               (kill-buffer buf))))
+          (`(ws . ,name)
+           (setq agents--workspaces (assoc-delete-all name agents--workspaces))
+           (let ((tab-name (agents--workspace-tab-name name))
+                 (names (agents--tab-names)))
+             (when (and (member tab-name names) (> (length names) 1))
+               (ignore-errors (tab-bar-close-tab-by-name tab-name)))))
           (`(tab . ,name)
            (let ((names (agents--tab-names)))
              (when (and (member name names) (> (length names) 1))

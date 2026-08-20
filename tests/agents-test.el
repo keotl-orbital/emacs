@@ -209,46 +209,55 @@
                    "say done"))))
 
 (ert-deftest agents-workspace-tab-name-roundtrip ()
-  (should (equal (agents--workspace-session-id (agents--workspace-tab-name "abc-1")) "abc-1"))
-  (should-not (agents--workspace-session-id "main"))
-  (should-not (agents--workspace-session-id "*claude*")))
+  (should (equal (agents--workspace-name (agents--workspace-tab-name "feat-x")) "feat-x"))
+  (should-not (agents--workspace-name "main"))
+  (should-not (agents--workspace-name "*claude*"))
+  (should (agents--plain-tab-p "main"))
+  (should-not (agents--plain-tab-p "ws:feat-x"))
+  (should-not (agents--plain-tab-p "agent:1-2-3")))
 
-(ert-deftest agents-workspace-buffer-lookup ()
-  (agents-test--with-state-dir
-   (agents-test--with-vterm-buffer buf t
-     (setq agents--session-id "sess-ws")
-     (should (eq (agents--workspace-buffer (agents--workspace-tab-name "sess-ws")) buf))
-     (should-not (agents--workspace-buffer (agents--workspace-tab-name "unknown")))
-     (should-not (agents--workspace-buffer "main")))))
+(ert-deftest agents-workspace-create-registers ()
+  (let ((agents--workspaces nil)
+        (dir (make-temp-file "agents-ws" t)))
+    (unwind-protect
+        (progn
+          (agents-workspace-create "feat" dir)
+          (should (equal (agents--workspace-root "feat")
+                         (file-name-as-directory dir)))
+          (should-error (agents-workspace-create "feat" dir)
+                        :type 'user-error)
+          (should-error (agents-workspace-create "" dir)
+                        :type 'user-error))
+      (delete-directory dir t))))
 
-(ert-deftest agents-workspace-label ()
+(ert-deftest agents-workspace-state-from-sessions-under-root ()
   (agents-test--with-state-dir
-   (agents-test--with-vterm-buffer buf t
-     (setq agents--session-id "sess-ws")
-     (should (equal (agents--workspace-label (agents--workspace-tab-name "sess-ws"))
-                    (buffer-name buf)))
-     (should (equal (agents--workspace-label "main") "main")))))
+   (let ((agents--workspaces nil)
+         (root (file-name-as-directory (make-temp-file "agents-root" t))))
+     (unwind-protect
+         (agents-test--with-vterm-buffer buf t
+           (setq default-directory root)
+           (setq agents--session-id "sess-ws")
+           (puthash "sess-ws" (list :state 'waiting :since (float-time))
+                    agents--states)
+           (should (eq (agents--workspace-state root) 'waiting))
+           (setq default-directory (expand-file-name "~/"))
+           (should-not (agents--workspace-state root)))
+       (delete-directory root t)))))
 
-(ert-deftest agents-sidebar-rows-main-first-then-sessions ()
+(ert-deftest agents-sidebar-rows-main-then-workspaces ()
   (agents-test--with-state-dir
-   (agents-test--with-vterm-buffer buf t
-     (setq agents--session-id "sess-ws")
-     (puthash "sess-ws" (list :state 'waiting :since (float-time))
-              agents--states)
+   (let ((agents--workspaces (list (cons "feat" (expand-file-name "~/")))))
      (let ((rows (agents--sidebar-rows)))
        (should (equal (car rows)
                       (list agents-workspace-main-name nil '(tab . "main"))))
-       (let ((session-row (assoc (buffer-name buf) rows)))
-         (should session-row)
-         (should (eq (nth 1 session-row) 'waiting))
-         (should (equal (nth 2 session-row) (cons 'buffer buf))))))))
+       (let ((ws-row (assoc "feat" rows)))
+         (should ws-row)
+         (should (equal (nth 2 ws-row) '(ws . "feat"))))))))
 
 (ert-deftest agents-sidebar-render-lists-workspaces ()
   (agents-test--with-state-dir
-   (agents-test--with-vterm-buffer buf t
-     (setq agents--session-id "sess-ws")
-     (puthash "sess-ws" (list :state 'waiting :since (float-time))
-              agents--states)
+   (let ((agents--workspaces (list (cons "feat" (expand-file-name "~/")))))
      (unwind-protect
          (progn
            (get-buffer-create "*agents-sidebar*")
@@ -258,8 +267,7 @@
              (let ((text (buffer-string)))
                (should (string-match-p "workspaces" text))
                (should (string-match-p "main" text))
-               (should (string-match-p (regexp-quote (buffer-name buf)) text))
-               (should (string-match-p "●" text)))))
+               (should (string-match-p "feat" text)))))
        (kill-buffer "*agents-sidebar*")))))
 
 (ert-deftest agents-sidebar-open-binding ()
@@ -286,58 +294,52 @@
 
 (ert-deftest agents-sidebar-mark-and-unmark ()
   (agents-test--with-state-dir
-   (agents-test--with-vterm-buffer buf t
+   (let ((agents--workspaces (list (cons "feat" (expand-file-name "~/")))))
      (agents-test--with-sidebar
       (goto-char (point-min))
-      (search-forward (buffer-name buf))
+      (search-forward "feat")
       (beginning-of-line)
       (agents-sidebar-mark)
-      (should (equal agents--sidebar-marks (list (cons 'buffer buf))))
-      (should (string-match-p (concat "^\\*.*" (regexp-quote (buffer-name buf)))
-                              (buffer-string)))
+      (should (equal agents--sidebar-marks '((ws . "feat"))))
+      (should (string-match-p "^\\*.*feat" (buffer-string)))
       (goto-char (point-min))
-      (search-forward (buffer-name buf))
+      (search-forward "feat")
       (agents-sidebar-unmark)
       (should-not agents--sidebar-marks)))))
 
-(ert-deftest agents-sidebar-delete-marked-kills-session ()
+(ert-deftest agents-sidebar-delete-marked-unregisters-workspace ()
   (agents-test--with-state-dir
-   (let ((buf (generate-new-buffer "*claude*")))
-     (with-current-buffer buf
-       (setq major-mode 'vterm-mode)
-       (start-process "agents-test-proc" buf "cat")
-       (set-process-query-on-exit-flag (get-buffer-process buf) nil))
+   (let ((agents--workspaces (list (cons "feat" (expand-file-name "~/"))
+                                   (cons "other" (expand-file-name "~/")))))
      (agents-test--with-sidebar
-      (setq agents--sidebar-marks (list (cons 'buffer buf)))
+      (setq agents--sidebar-marks '((ws . "feat")))
       (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) t)))
         (agents-sidebar-delete))
-      (should-not (buffer-live-p buf))
+      (should-not (assoc "feat" agents--workspaces))
+      (should (assoc "other" agents--workspaces))
       (should-not agents--sidebar-marks)))))
 
 (ert-deftest agents-sidebar-delete-uses-point-when-unmarked ()
   (agents-test--with-state-dir
-   (let ((buf (generate-new-buffer "*claude*")))
-     (with-current-buffer buf
-       (setq major-mode 'vterm-mode)
-       (start-process "agents-test-proc" buf "cat")
-       (set-process-query-on-exit-flag (get-buffer-process buf) nil))
+   (let ((agents--workspaces (list (cons "feat" (expand-file-name "~/")))))
      (agents-test--with-sidebar
       (goto-char (point-min))
-      (search-forward (buffer-name buf))
+      (search-forward "feat")
       (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) t)))
         (agents-sidebar-delete))
-      (should-not (buffer-live-p buf))))))
+      (should-not (assoc "feat" agents--workspaces))))))
 
-(ert-deftest agents-sidebar-rename-session ()
+(ert-deftest agents-sidebar-rename-workspace ()
   (agents-test--with-state-dir
-   (agents-test--with-vterm-buffer buf t
+   (let ((agents--workspaces (list (cons "feat" (expand-file-name "~/")))))
      (agents-test--with-sidebar
       (goto-char (point-min))
-      (search-forward (buffer-name buf))
+      (search-forward "feat")
       (cl-letf (((symbol-function 'read-string)
-                 (lambda (&rest _) "*claude:renamed*")))
+                 (lambda (&rest _) "feat-renamed")))
         (agents-sidebar-rename))
-      (should (equal (buffer-name buf) "*claude:renamed*"))))))
+      (should (assoc "feat-renamed" agents--workspaces))
+      (should-not (assoc "feat" agents--workspaces))))))
 
 (provide 'agents-test)
 ;;; agents-test.el ends here

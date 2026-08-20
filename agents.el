@@ -533,6 +533,39 @@ commands that compute DIRECTORY first (see Commentary)."
   (tab-bar-switch-to-prev-tab)
   (agents--sidebar-sync))
 
+(defun agents--current-workspace-name ()
+  "Name of the active workspace: registered name, tab name, or main."
+  (let ((tab (and (bound-and-true-p tab-bar-mode)
+                  (alist-get 'name (tab-bar--current-tab)))))
+    (or (and tab (agents--workspace-name tab))
+        tab
+        agents-workspace-main-name)))
+
+(defun agents--workspace-claude-buffer-name (workspace)
+  (format "*%s:claude*" workspace))
+
+(defun agents-workspace-claude ()
+  "Start or switch to the claude instance of the active workspace.
+Like `start-claude-vterm', but the buffer name is prefixed with the
+workspace name, so each workspace gets its own claude instance.
+Starts in the workspace root when the workspace is registered."
+  (interactive)
+  (let* ((workspace (agents--current-workspace-name))
+         (buffer-name (agents--workspace-claude-buffer-name workspace))
+         (existing (get-buffer buffer-name)))
+    (if existing
+        (switch-to-buffer existing)
+      (let ((default-directory
+             (or (agents--workspace-root workspace)
+                 (when-let* ((pr (project-current))) (project-root pr))
+                 default-directory)))
+        (with-current-buffer (vterm t)
+          (vterm-send-string "claude")
+          (vterm-send-return)
+          (rename-buffer buffer-name t)
+          (when (fboundp 'vterm-app-mode)
+            (vterm-app-mode 1)))))))
+
 (defun agents-workspace-switch ()
   "Pick a workspace: plain tabs (main etc.) or a registered workspace."
   (interactive)

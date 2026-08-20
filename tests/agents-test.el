@@ -341,5 +341,13 @@
       (should (assoc "feat-renamed" agents--workspaces))
       (should-not (assoc "feat" agents--workspaces))))))
 
+(ert-deftest agents-workspace-claude-buffer-name ()
+  (should (equal (agents--workspace-claude-buffer-name "feat") "*feat:claude*"))
+  (should (equal (agents--workspace-claude-buffer-name "main") "*main:claude*")))
+
+(ert-deftest agents-current-workspace-name-defaults-to-main ()
+  (let ((tab-bar-mode nil))
+    (should (equal (agents--current-workspace-name) "main"))))
+
 (provide 'agents-test)
 ;;; agents-test.el ends here

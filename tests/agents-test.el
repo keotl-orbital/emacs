@@ -346,9 +346,11 @@
       (should (assoc "feat-renamed" agents--workspaces))
       (should-not (assoc "feat" agents--workspaces))))))
 
-(ert-deftest agents-workspace-claude-buffer-name ()
-  (should (equal (agents--workspace-claude-buffer-name "feat") "*feat:claude*"))
-  (should (equal (agents--workspace-claude-buffer-name "main") "*main:claude*")))
+(ert-deftest agents-workspace-app-buffer-name ()
+  (should (equal (agents--workspace-app-buffer-name "feat" "claude") "*feat:claude*"))
+  (should (equal (agents--workspace-app-buffer-name "main" "vterm") "*main:vterm*"))
+  (should (commandp 'agents-workspace-claude))
+  (should (commandp 'agents-workspace-vterm)))
 
 (ert-deftest agents-current-workspace-name-defaults-to-main ()
   (let ((tab-bar-mode nil))

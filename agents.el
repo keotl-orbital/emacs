@@ -554,17 +554,16 @@ commands that compute DIRECTORY first (see Commentary)."
         tab
         agents-workspace-main-name)))
 
-(defun agents--workspace-claude-buffer-name (workspace)
-  (format "*%s:claude*" workspace))
+(defun agents--workspace-app-buffer-name (workspace app)
+  (format "*%s:%s*" workspace app))
 
-(defun agents-workspace-claude ()
-  "Start or switch to the claude instance of the active workspace.
-Like `start-claude-vterm', but the buffer name is prefixed with the
-workspace name, so each workspace gets its own claude instance.
-Starts in the workspace root when the workspace is registered."
-  (interactive)
+(defun agents--workspace-app (app &optional command)
+  "Start or switch to the APP vterm of the active workspace.
+The buffer is named *WORKSPACE:APP*, so each workspace gets its own
+instance.  COMMAND, if given, is run in the new vterm.  Starts in the
+workspace root when the workspace is registered."
   (let* ((workspace (agents--current-workspace-name))
-         (buffer-name (agents--workspace-claude-buffer-name workspace))
+         (buffer-name (agents--workspace-app-buffer-name workspace app))
          (existing (get-buffer buffer-name)))
     (if existing
         (switch-to-buffer existing)
@@ -573,11 +572,22 @@ Starts in the workspace root when the workspace is registered."
                  (when-let* ((pr (project-current))) (project-root pr))
                  default-directory)))
         (with-current-buffer (vterm t)
-          (vterm-send-string "claude")
-          (vterm-send-return)
+          (when command
+            (vterm-send-string command)
+            (vterm-send-return))
           (rename-buffer buffer-name t)
           (when (fboundp 'vterm-app-mode)
             (vterm-app-mode 1)))))))
+
+(defun agents-workspace-claude ()
+  "Start or switch to the claude instance of the active workspace."
+  (interactive)
+  (agents--workspace-app "claude" "claude"))
+
+(defun agents-workspace-vterm ()
+  "Start or switch to the shell vterm of the active workspace."
+  (interactive)
+  (agents--workspace-app "vterm"))
 
 (defun agents-workspace-switch ()
   "Pick a workspace: plain tabs (main etc.) or a registered workspace."

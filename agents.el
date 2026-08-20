@@ -589,6 +589,11 @@ workspace root when the workspace is registered."
   (interactive)
   (agents--workspace-app "vterm"))
 
+(defun agents-workspace-codex ()
+  "Start or switch to the codex instance of the active workspace."
+  (interactive)
+  (agents--workspace-app "codex" "codex"))
+
 (defun agents-workspace-switch ()
   "Pick a workspace: plain tabs (main etc.) or a registered workspace."
   (interactive)

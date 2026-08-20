@@ -350,7 +350,8 @@
   (should (equal (agents--workspace-app-buffer-name "feat" "claude") "*feat:claude*"))
   (should (equal (agents--workspace-app-buffer-name "main" "vterm") "*main:vterm*"))
   (should (commandp 'agents-workspace-claude))
-  (should (commandp 'agents-workspace-vterm)))
+  (should (commandp 'agents-workspace-vterm))
+  (should (commandp 'agents-workspace-codex)))
 
 (ert-deftest agents-current-workspace-name-defaults-to-main ()
   (let ((tab-bar-mode nil))

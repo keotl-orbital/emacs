@@ -7,6 +7,8 @@
 (require 'json)
 (require 'project)
 
+(defvar vterm-environment)
+
 (defvar agents-state-directory (expand-file-name "~/.cache/emacs-agents/")
   "Directory where Claude Code hooks write per-session state files.")
 
@@ -140,7 +142,7 @@ Use FALLBACK (typically the process name) for generic \"*vterm*\" buffers."
     (_ (format "  %s" state))))
 
 (defun agents--project-label (dir)
-  (if-let ((pr (ignore-errors (project-current nil dir))))
+  (if-let* ((pr (ignore-errors (project-current nil dir))))
       (project-name pr)
     (abbreviate-file-name (directory-file-name dir))))
 

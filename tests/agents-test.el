@@ -294,7 +294,8 @@
                   ("m" . agents-sidebar-mark)
                   ("u" . agents-sidebar-unmark)
                   ("U" . agents-sidebar-unmark-all)
-                  ("D" . agents-sidebar-delete)))
+                  ("D" . agents-sidebar-delete)
+                  ("c" . agents-workspace-create)))
     (should (eq (lookup-key agents-sidebar-mode-map (car pair)) (cdr pair)))))
 
 (ert-deftest agents-sidebar-mark-and-unmark ()

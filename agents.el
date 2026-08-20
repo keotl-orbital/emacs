@@ -982,6 +982,7 @@ Session workspaces are killed; plain tabs are closed."
 (define-key agents-sidebar-mode-map "u" #'agents-sidebar-unmark)
 (define-key agents-sidebar-mode-map "U" #'agents-sidebar-unmark-all)
 (define-key agents-sidebar-mode-map "D" #'agents-sidebar-delete)
+(define-key agents-sidebar-mode-map "c" #'agents-workspace-create)
 (with-eval-after-load 'evil
   (evil-set-initial-state 'agents-sidebar-mode 'normal)
   (evil-define-key 'normal agents-sidebar-mode-map
@@ -992,7 +993,8 @@ Session workspaces are killed; plain tabs are closed."
     "m" #'agents-sidebar-mark
     "u" #'agents-sidebar-unmark
     "U" #'agents-sidebar-unmark-all
-    "D" #'agents-sidebar-delete))
+    "D" #'agents-sidebar-delete
+    "c" #'agents-workspace-create))
 
 (unless noninteractive (agents-setup))
 

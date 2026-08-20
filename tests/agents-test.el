@@ -208,5 +208,59 @@
                               (aref (alist-get 'hooks (aref stop 0)) 0))
                    "say done"))))
 
+(ert-deftest agents-workspace-tab-name-roundtrip ()
+  (should (equal (agents--workspace-session-id (agents--workspace-tab-name "abc-1")) "abc-1"))
+  (should-not (agents--workspace-session-id "main"))
+  (should-not (agents--workspace-session-id "*claude*")))
+
+(ert-deftest agents-workspace-buffer-lookup ()
+  (agents-test--with-state-dir
+   (agents-test--with-vterm-buffer buf t
+     (setq agents--session-id "sess-ws")
+     (should (eq (agents--workspace-buffer (agents--workspace-tab-name "sess-ws")) buf))
+     (should-not (agents--workspace-buffer (agents--workspace-tab-name "unknown")))
+     (should-not (agents--workspace-buffer "main")))))
+
+(ert-deftest agents-workspace-label ()
+  (agents-test--with-state-dir
+   (agents-test--with-vterm-buffer buf t
+     (setq agents--session-id "sess-ws")
+     (should (equal (agents--workspace-label (agents--workspace-tab-name "sess-ws"))
+                    (buffer-name buf)))
+     (should (equal (agents--workspace-label "main") "main")))))
+
+(ert-deftest agents-sidebar-rows-main-first-then-sessions ()
+  (agents-test--with-state-dir
+   (agents-test--with-vterm-buffer buf t
+     (setq agents--session-id "sess-ws")
+     (puthash "sess-ws" (list :state 'waiting :since (float-time))
+              agents--states)
+     (let ((rows (agents--sidebar-rows)))
+       (should (equal (car rows)
+                      (list agents-workspace-main-name nil '(tab . "main"))))
+       (let ((session-row (assoc (buffer-name buf) rows)))
+         (should session-row)
+         (should (eq (nth 1 session-row) 'waiting))
+         (should (equal (nth 2 session-row) (cons 'buffer buf))))))))
+
+(ert-deftest agents-sidebar-render-lists-workspaces ()
+  (agents-test--with-state-dir
+   (agents-test--with-vterm-buffer buf t
+     (setq agents--session-id "sess-ws")
+     (puthash "sess-ws" (list :state 'waiting :since (float-time))
+              agents--states)
+     (unwind-protect
+         (progn
+           (get-buffer-create "*agents-sidebar*")
+           (with-current-buffer "*agents-sidebar*" (agents-sidebar-mode))
+           (agents--sidebar-render)
+           (with-current-buffer "*agents-sidebar*"
+             (let ((text (buffer-string)))
+               (should (string-match-p "workspaces" text))
+               (should (string-match-p "main" text))
+               (should (string-match-p (regexp-quote (buffer-name buf)) text))
+               (should (string-match-p "●" text)))))
+       (kill-buffer "*agents-sidebar*")))))
+
 (provide 'agents-test)
 ;;; agents-test.el ends here

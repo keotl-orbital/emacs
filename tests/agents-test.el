@@ -160,5 +160,25 @@
              (should (string-match-p "claude" (buffer-string))))
          (kill-buffer))))))
 
+(ert-deftest agents-waiting-buffers ()
+  (agents-test--with-state-dir
+   (agents-test--with-vterm-buffer buf t
+     (setq agents--session-id "sess-1")
+     (puthash "sess-1" (list :state 'waiting :since (float-time))
+              agents--states)
+     (should (equal (agents--waiting-buffers) (list buf))))))
+
+(ert-deftest agents-update-badge ()
+  (agents-test--with-state-dir
+   (let ((agents--badge ""))
+     (agents--update-badge)
+     (should (equal agents--badge ""))
+     (agents-test--with-vterm-buffer buf t
+       (setq agents--session-id "sess-1")
+       (puthash "sess-1" (list :state 'waiting :since (float-time))
+                agents--states)
+       (agents--update-badge)
+       (should (string-match-p "●1" agents--badge))))))
+
 (provide 'agents-test)
 ;;; agents-test.el ends here

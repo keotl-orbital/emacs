@@ -81,6 +81,7 @@ Use FALLBACK (typically the process name) for generic \"*vterm*\" buffers."
 
 (defun agents--after-state-change ()
   "Refresh badge and dashboard after the state store changed."
+  (agents--update-badge)
   (let ((buf (get-buffer "*agents*")))
     (when (and buf (get-buffer-window buf t))
       (with-current-buffer buf (revert-buffer)))))
@@ -108,13 +109,20 @@ Use FALLBACK (typically the process name) for generic \"*vterm*\" buffers."
   (make-directory agents-state-directory t)
   (agents--sweep-stale-files)
   (add-hook 'kill-buffer-hook #'agents--cleanup-killed-buffer)
+  (unless (memq 'agents--badge global-mode-string)
+    (setq global-mode-string
+          (append (if (listp global-mode-string)
+                      global-mode-string
+                    (list global-mode-string))
+                  '(agents--badge))))
   (condition-case nil
       (setq agents--watch
             (file-notify-add-watch agents-state-directory '(change)
                                    #'agents--notify-callback))
     (error
      (setq agents--poll-timer
-           (run-with-timer 3 3 #'agents--poll-state-directory)))))
+           (run-with-timer 3 3 #'agents--poll-state-directory))))
+  (agents--update-badge))
 
 (defun agents--buffer-state (buf)
   (with-current-buffer buf
@@ -262,6 +270,38 @@ Use FALLBACK (typically the process name) for generic \"*vterm*\" buffers."
   (unless agents--refresh-timer
     (setq agents--refresh-timer
           (run-with-timer 5 5 #'agents--refresh-tick))))
+
+(defvar agents--badge "")
+(put 'agents--badge 'risky-local-variable t)
+
+(defun agents--waiting-buffers ()
+  (cl-remove-if-not (lambda (b) (eq (agents--buffer-state b) 'waiting))
+                    (agents--vterm-buffers)))
+
+(defun agents--update-badge ()
+  (let ((text (agents--badge-text (length (agents--waiting-buffers)))))
+    (setq agents--badge
+          (if (null text) ""
+            (concat " " (propertize
+                         text
+                         'face 'warning
+                         'mouse-face 'mode-line-highlight
+                         'help-echo "Agents waiting — mouse-1: jump"
+                         'local-map (let ((m (make-sparse-keymap)))
+                                      (define-key m [mode-line mouse-1]
+                                                  #'agents-jump-to-waiting)
+                                      m)))))
+    (force-mode-line-update t)))
+
+(defun agents-jump-to-waiting ()
+  "Cycle through vterm sessions waiting for input."
+  (interactive)
+  (let ((bufs (agents--waiting-buffers)))
+    (if (null bufs)
+        (message "No agents waiting")
+      (let ((pos (cl-position (current-buffer) bufs)))
+        (switch-to-buffer
+         (nth (mod (1+ (or pos -1)) (length bufs)) bufs))))))
 
 (unless noninteractive (agents-setup))
 

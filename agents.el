@@ -981,8 +981,32 @@ Session workspaces are killed; plain tabs are closed."
 (define-key agents-sidebar-mode-map "m" #'agents-sidebar-mark)
 (define-key agents-sidebar-mode-map "u" #'agents-sidebar-unmark)
 (define-key agents-sidebar-mode-map "U" #'agents-sidebar-unmark-all)
+(defun agents--sidebar-visit-app (app &optional command)
+  "Open the workspace at point (if any) and its APP vterm."
+  (agents--sidebar-act)
+  (agents--select-non-side-window)
+  (agents--workspace-app app command))
+
+(defun agents-sidebar-claude ()
+  "Open the claude instance of the workspace at point."
+  (interactive)
+  (agents--sidebar-visit-app "claude" "claude"))
+
+(defun agents-sidebar-codex ()
+  "Open the codex instance of the workspace at point."
+  (interactive)
+  (agents--sidebar-visit-app "codex" "codex"))
+
+(defun agents-sidebar-vterm ()
+  "Open the shell vterm of the workspace at point."
+  (interactive)
+  (agents--sidebar-visit-app "vterm"))
+
 (define-key agents-sidebar-mode-map "D" #'agents-sidebar-delete)
-(define-key agents-sidebar-mode-map "c" #'agents-workspace-create)
+(define-key agents-sidebar-mode-map "N" #'agents-workspace-create)
+(define-key agents-sidebar-mode-map "c" #'agents-sidebar-claude)
+(define-key agents-sidebar-mode-map "x" #'agents-sidebar-codex)
+(define-key agents-sidebar-mode-map "t" #'agents-sidebar-vterm)
 (with-eval-after-load 'evil
   (evil-set-initial-state 'agents-sidebar-mode 'normal)
   (evil-define-key 'normal agents-sidebar-mode-map
@@ -994,7 +1018,10 @@ Session workspaces are killed; plain tabs are closed."
     "u" #'agents-sidebar-unmark
     "U" #'agents-sidebar-unmark-all
     "D" #'agents-sidebar-delete
-    "c" #'agents-workspace-create))
+    "N" #'agents-workspace-create
+    "c" #'agents-sidebar-claude
+    "x" #'agents-sidebar-codex
+    "t" #'agents-sidebar-vterm))
 
 (unless noninteractive (agents-setup))
 

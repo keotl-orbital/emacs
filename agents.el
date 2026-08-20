@@ -687,11 +687,25 @@ Starts in the workspace root when the workspace is registered."
       (delete-window win)))
   (agents--sidebar-render))
 
-(defun agents-sidebar-toggle ()
-  "Toggle the workspace sidebar."
+(defun agents-sidebar-close ()
+  "Close the workspace sidebar."
   (interactive)
-  (setq agents--sidebar-visible (not agents--sidebar-visible))
+  (setq agents--sidebar-visible nil)
   (agents--sidebar-sync))
+
+(defun agents-sidebar-toggle ()
+  "Focus the sidebar, opening it if needed; close it when already focused."
+  (interactive)
+  (let ((win (get-buffer-window "*agents-sidebar*")))
+    (cond
+     ((and win (eq (selected-window) win))
+      (agents-sidebar-close))
+     (win (select-window win))
+     (t
+      (setq agents--sidebar-visible t)
+      (agents--sidebar-sync)
+      (when-let* ((win (get-buffer-window "*agents-sidebar*")))
+        (select-window win))))))
 
 (defun agents--select-non-side-window ()
   (when-let* ((win (cl-find-if-not
@@ -815,7 +829,7 @@ Session workspaces are killed; plain tabs are closed."
 (define-key agents-sidebar-mode-map (kbd "RET") #'agents-sidebar-select)
 (define-key agents-sidebar-mode-map [mouse-1] #'agents-sidebar-mouse-select)
 (define-key agents-sidebar-mode-map "o" #'agents-sidebar-open)
-(define-key agents-sidebar-mode-map "q" #'agents-sidebar-toggle)
+(define-key agents-sidebar-mode-map "q" #'agents-sidebar-close)
 (define-key agents-sidebar-mode-map "R" #'agents-sidebar-rename)
 (define-key agents-sidebar-mode-map "m" #'agents-sidebar-mark)
 (define-key agents-sidebar-mode-map "u" #'agents-sidebar-unmark)
@@ -826,7 +840,7 @@ Session workspaces are killed; plain tabs are closed."
   (evil-define-key 'normal agents-sidebar-mode-map
     (kbd "RET") #'agents-sidebar-select
     "o" #'agents-sidebar-open
-    "q" #'agents-sidebar-toggle
+    "q" #'agents-sidebar-close
     "R" #'agents-sidebar-rename
     "m" #'agents-sidebar-mark
     "u" #'agents-sidebar-unmark

@@ -274,6 +274,11 @@
   (should (eq (lookup-key agents-sidebar-mode-map "o") 'agents-sidebar-open))
   (should (commandp 'agents-sidebar-open)))
 
+(ert-deftest agents-sidebar-close-binding ()
+  (should (eq (lookup-key agents-sidebar-mode-map "q") 'agents-sidebar-close))
+  (should (commandp 'agents-sidebar-close))
+  (should (commandp 'agents-sidebar-toggle)))
+
 (defmacro agents-test--with-sidebar (&rest body)
   `(unwind-protect
        (progn

@@ -171,6 +171,7 @@ Use FALLBACK (typically the process name) for generic \"*vterm*\" buffers."
            (run-with-timer 3 3 #'agents--poll-state-directory))))
   (setq tab-bar-show nil)
   (tab-bar-mode 1)
+  (agents--ensure-main-tab)
   (add-to-list 'desktop-globals-to-save 'agents--workspaces)
   (unless (memq 'agents--workspace-indicator global-mode-string)
     (setq global-mode-string
@@ -471,15 +472,25 @@ Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent."
     (car (sort states (lambda (a b) (< (agents--state-sort-key a)
                                        (agents--state-sort-key b)))))))
 
+(defun agents--ensure-main-tab ()
+  "Name the first auto-named plain tab main, unless a main tab exists."
+  (when (bound-and-true-p tab-bar-mode)
+    (let ((tabs (funcall tab-bar-tabs-function)))
+      (unless (member agents-workspace-main-name
+                      (mapcar (lambda (tab) (alist-get 'name tab)) tabs))
+        (when-let* ((tab (cl-find-if
+                          (lambda (tab)
+                            (and (agents--plain-tab-p (alist-get 'name tab))
+                                 (not (alist-get 'explicit-name tab))))
+                          tabs)))
+          (tab-bar-rename-tab-by-name (alist-get 'name tab)
+                                      agents-workspace-main-name))))))
+
 (defun agents--ensure-tab-bar ()
   (unless tab-bar-mode
     (setq tab-bar-show nil)
     (tab-bar-mode 1))
-  (let ((names (agents--tab-names)))
-    (when (and (= (length names) 1)
-               (agents--plain-tab-p (car names))
-               (not (equal (car names) agents-workspace-main-name)))
-      (tab-bar-rename-tab agents-workspace-main-name))))
+  (agents--ensure-main-tab))
 
 (defun agents--update-workspace-indicator ()
   (let* ((name (and (bound-and-true-p tab-bar-mode)
@@ -668,6 +679,7 @@ Starts in the workspace root when the workspace is registered."
     (agents--sidebar-render)))
 
 (defun agents--sidebar-sync (&rest _)
+  (agents--ensure-main-tab)
   (agents--update-workspace-indicator)
   (if agents--sidebar-visible
       (agents--sidebar-show)

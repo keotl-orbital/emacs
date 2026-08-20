@@ -363,5 +363,27 @@
        (when agents--poll-timer (cancel-timer agents--poll-timer))
        (unless had-tab-bar (tab-bar-mode -1))))))
 
+(ert-deftest agents-ensure-main-tab-renames-auto-named-tab ()
+  (let ((had tab-bar-mode))
+    (unwind-protect
+        (progn
+          (tab-bar-mode 1)
+          (agents--ensure-main-tab)
+          (should (member agents-workspace-main-name (agents--tab-names))))
+      (tab-bar-rename-tab "")
+      (unless had (tab-bar-mode -1)))))
+
+(ert-deftest agents-ensure-main-tab-respects-explicit-names ()
+  (let ((had tab-bar-mode))
+    (unwind-protect
+        (progn
+          (tab-bar-mode 1)
+          (tab-bar-rename-tab "mytab")
+          (agents--ensure-main-tab)
+          (should-not (member agents-workspace-main-name (agents--tab-names)))
+          (should (member "mytab" (agents--tab-names))))
+      (tab-bar-rename-tab "")
+      (unless had (tab-bar-mode -1)))))
+
 (provide 'agents-test)
 ;;; agents-test.el ends here

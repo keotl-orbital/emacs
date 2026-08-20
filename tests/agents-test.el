@@ -145,5 +145,20 @@
        (let ((entries (agents--dashboard-entries)))
          (should (eq (caar entries) waiting-buf)))))))
 
+(ert-deftest agents-dashboard-mode-renders ()
+  (agents-test--with-state-dir
+   (agents-test--with-vterm-buffer buf t
+     (setq agents--session-id "sess-1")
+     (puthash "sess-1" (list :state 'waiting :since (float-time))
+              agents--states)
+     (with-current-buffer (get-buffer-create "*agents-test-dash*")
+       (unwind-protect
+           (progn
+             (agents-dashboard-mode)
+             (revert-buffer)
+             (should (string-match-p "waiting" (buffer-string)))
+             (should (string-match-p "claude" (buffer-string))))
+         (kill-buffer))))))
+
 (provide 'agents-test)
 ;;; agents-test.el ends here

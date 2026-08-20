@@ -81,7 +81,9 @@ Use FALLBACK (typically the process name) for generic \"*vterm*\" buffers."
 
 (defun agents--after-state-change ()
   "Refresh badge and dashboard after the state store changed."
-  nil)
+  (let ((buf (get-buffer "*agents*")))
+    (when (and buf (get-buffer-window buf t))
+      (with-current-buffer buf (revert-buffer)))))
 
 (defun agents--notify-callback (event)
   (pcase-let ((`(,_desc ,action ,file . ,_) event))
@@ -172,6 +174,94 @@ Use FALLBACK (typically the process name) for generic \"*vterm*\" buffers."
 
 (with-eval-after-load 'vterm
   (advice-add 'vterm-mode :around #'agents--vterm-mode-advice))
+
+(defvar agents--refresh-timer nil)
+
+(define-derived-mode agents-dashboard-mode tabulated-list-mode "Agents"
+  "Overview of running vterm agent sessions."
+  (setq tabulated-list-format
+        [("STATE" 10 nil) ("TOOL" 8 t) ("PROJECT" 24 t)
+         ("BUFFER" 28 t) ("SINCE" 6 nil)])
+  (setq tabulated-list-entries #'agents--dashboard-entries)
+  (tabulated-list-init-header))
+
+(defun agents--target-buffer ()
+  (let ((buf (tabulated-list-get-id)))
+    (unless (buffer-live-p buf)
+      (user-error "No session on this line"))
+    buf))
+
+(defun agents-open ()
+  (interactive)
+  (pop-to-buffer-same-window (agents--target-buffer)))
+
+(defun agents-open-other-window ()
+  (interactive)
+  (pop-to-buffer (agents--target-buffer)))
+
+(defun agents-new-session ()
+  (interactive)
+  (let ((starter (pcase (completing-read
+                         "Tool: " '("claude" "codex" "aider" "fish") nil t)
+                   ("claude" 'start-claude-vterm)
+                   ("codex" 'start-codex-vterm)
+                   ("aider" 'start-aider-vterm)
+                   ("fish" 'start-vterm-default))))
+    (if (fboundp starter)
+        (call-interactively starter)
+      (user-error "%s is not defined (is apps.el loaded?)" starter))))
+
+(defun agents-kill-session ()
+  (interactive)
+  (let ((buf (agents--target-buffer)))
+    (when (yes-or-no-p (format "Kill %s? " (buffer-name buf)))
+      (let ((kill-buffer-query-functions nil))
+        (kill-buffer buf))
+      (revert-buffer))))
+
+(defun agents-rename-session ()
+  (interactive)
+  (let ((buf (agents--target-buffer)))
+    (with-current-buffer buf
+      (rename-buffer (read-string "Rename to: " (buffer-name)) t)))
+  (revert-buffer))
+
+(define-key agents-dashboard-mode-map (kbd "RET") #'agents-open)
+(define-key agents-dashboard-mode-map "o" #'agents-open-other-window)
+(define-key agents-dashboard-mode-map "n" #'agents-new-session)
+(define-key agents-dashboard-mode-map "x" #'agents-kill-session)
+(define-key agents-dashboard-mode-map "r" #'agents-rename-session)
+
+(with-eval-after-load 'evil
+  (evil-set-initial-state 'agents-dashboard-mode 'normal)
+  (evil-define-key 'normal agents-dashboard-mode-map
+    (kbd "RET") #'agents-open
+    "o" #'agents-open-other-window
+    "n" #'agents-new-session
+    "x" #'agents-kill-session
+    "r" #'agents-rename-session
+    "gr" #'revert-buffer
+    "q" #'quit-window))
+
+(defun agents--refresh-tick ()
+  (let ((buf (get-buffer "*agents*")))
+    (if (and buf (get-buffer-window buf t))
+        (with-current-buffer buf (revert-buffer))
+      (when agents--refresh-timer
+        (cancel-timer agents--refresh-timer)
+        (setq agents--refresh-timer nil)))))
+
+(defun agents-dashboard ()
+  "Show an overview of all running vterm sessions."
+  (interactive)
+  (with-current-buffer (get-buffer-create "*agents*")
+    (unless (derived-mode-p 'agents-dashboard-mode)
+      (agents-dashboard-mode))
+    (revert-buffer)
+    (pop-to-buffer (current-buffer)))
+  (unless agents--refresh-timer
+    (setq agents--refresh-timer
+          (run-with-timer 5 5 #'agents--refresh-tick))))
 
 (unless noninteractive (agents-setup))
 

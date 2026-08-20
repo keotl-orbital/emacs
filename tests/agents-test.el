@@ -349,5 +349,19 @@
   (let ((tab-bar-mode nil))
     (should (equal (agents--current-workspace-name) "main"))))
 
+(ert-deftest agents-setup-persists-registry-via-desktop ()
+  (agents-test--with-state-dir
+   (let ((desktop-globals-to-save nil)
+         (agents--watch nil)
+         (agents--poll-timer nil)
+         (had-tab-bar tab-bar-mode))
+     (unwind-protect
+         (progn
+           (agents-setup)
+           (should (memq 'agents--workspaces desktop-globals-to-save)))
+       (when agents--watch (file-notify-rm-watch agents--watch))
+       (when agents--poll-timer (cancel-timer agents--poll-timer))
+       (unless had-tab-bar (tab-bar-mode -1))))))
+
 (provide 'agents-test)
 ;;; agents-test.el ends here

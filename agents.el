@@ -46,6 +46,7 @@
 (require 'filenotify)
 (require 'json)
 (require 'project)
+(require 'desktop)
 
 (defvar vterm-environment)
 
@@ -170,6 +171,7 @@ Use FALLBACK (typically the process name) for generic \"*vterm*\" buffers."
            (run-with-timer 3 3 #'agents--poll-state-directory))))
   (setq tab-bar-show nil)
   (tab-bar-mode 1)
+  (add-to-list 'desktop-globals-to-save 'agents--workspaces)
   (unless (memq 'agents--workspace-indicator global-mode-string)
     (setq global-mode-string
           (append global-mode-string '(agents--workspace-indicator))))

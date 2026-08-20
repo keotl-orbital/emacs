@@ -180,5 +180,33 @@
        (agents--update-badge)
        (should (string-match-p "●1" agents--badge))))))
 
+(defun agents-test--hook-events (json)
+  (mapcar #'car (alist-get 'hooks json)))
+
+(ert-deftest agents-merged-claude-hooks-from-empty ()
+  (let ((merged (agents--merged-claude-hooks nil)))
+    (dolist (event '(UserPromptSubmit PostToolUse Notification Stop))
+      (should (memq event (agents-test--hook-events merged))))
+    (let* ((stop (alist-get 'Stop (alist-get 'hooks merged)))
+           (cmd (alist-get 'command (aref (alist-get 'hooks (aref stop 0)) 0))))
+      (should (string-match-p "emacs-agents" cmd))
+      (should (string-match-p "done" cmd)))))
+
+(ert-deftest agents-merged-claude-hooks-idempotent ()
+  (let ((once (agents--merged-claude-hooks nil)))
+    (should (equal once (agents--merged-claude-hooks (copy-tree once t))))))
+
+(ert-deftest agents-merged-claude-hooks-preserves-existing ()
+  (let* ((existing '((hooks . ((Stop . [((hooks . [((type . "command")
+                                                   (command . "say done"))]))])))
+                     (model . "opus")))
+         (merged (agents--merged-claude-hooks (copy-tree existing t)))
+         (stop (alist-get 'Stop (alist-get 'hooks merged))))
+    (should (equal (alist-get 'model merged) "opus"))
+    (should (= (length stop) 2))
+    (should (equal (alist-get 'command
+                              (aref (alist-get 'hooks (aref stop 0)) 0))
+                   "say done"))))
+
 (provide 'agents-test)
 ;;; agents-test.el ends here

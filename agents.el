@@ -303,6 +303,71 @@ Use FALLBACK (typically the process name) for generic \"*vterm*\" buffers."
         (switch-to-buffer
          (nth (mod (1+ (or pos -1)) (length bufs)) bufs))))))
 
+(defconst agents--claude-hook-events
+  '(("UserPromptSubmit" . "working")
+    ("PostToolUse" . "working")
+    ("Notification" . "waiting")
+    ("Stop" . "done")))
+
+(defconst agents--claude-hook-command-format
+  (concat "[ -n \"$EMACS_AGENT_SESSION\" ] && "
+          "echo %s > \"$HOME/.cache/emacs-agents/$EMACS_AGENT_SESSION\" "
+          "|| true"))
+
+(defun agents--merged-claude-hooks (json)
+  "Return settings alist JSON with the agents hook entries merged in.
+Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent."
+  (let ((hooks (alist-get 'hooks json)))
+    (dolist (pair agents--claude-hook-events)
+      (let* ((event (intern (car pair)))
+             (cmd (format agents--claude-hook-command-format (cdr pair)))
+             (entries (alist-get event hooks))
+             (present
+              (cl-some
+               (lambda (entry)
+                 (cl-some (lambda (h)
+                            (string-match-p "emacs-agents"
+                                            (or (alist-get 'command h) "")))
+                          (append (alist-get 'hooks entry) nil)))
+               (append entries nil))))
+        (unless present
+          (setf (alist-get event hooks)
+                (vconcat entries
+                         (vector
+                          `((hooks . ,(vector `((type . "command")
+                                                (command . ,cmd)))))))))))
+    (setf (alist-get 'hooks json) hooks)
+    json))
+
+(defun agents-install-claude-hooks ()
+  "Merge the agents state hooks into ~/.claude/settings.json, with confirmation."
+  (interactive)
+  (let* ((file (expand-file-name "~/.claude/settings.json"))
+         (json (when (file-exists-p file)
+                 (with-temp-buffer
+                   (insert-file-contents file)
+                   (condition-case nil
+                       (json-parse-buffer :object-type 'alist
+                                          :array-type 'array)
+                     (error (user-error
+                             "%s does not parse; merge hooks manually" file))))))
+         (merged (agents--merged-claude-hooks (copy-tree json t))))
+    (if (equal json merged)
+        (message "Claude hooks already installed")
+      (with-current-buffer (get-buffer-create "*agents-claude-hooks*")
+        (erase-buffer)
+        (insert (json-serialize merged))
+        (json-pretty-print-buffer)
+        (display-buffer (current-buffer)))
+      (when (yes-or-no-p (format "Write this to %s? " file))
+        (when (file-exists-p file)
+          (copy-file file (concat file ".bak-"
+                                  (format-time-string "%Y%m%d%H%M%S"))))
+        (with-temp-file file
+          (insert (json-serialize merged))
+          (json-pretty-print-buffer))
+        (message "Hooks installed; restart running claude sessions to apply")))))
+
 (unless noninteractive (agents-setup))
 
 (provide 'agents)

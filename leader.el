@@ -89,7 +89,6 @@
 (define-key evil-normal-state-map (kbd "SPC h K") 'describe-keymap)
 (define-key evil-normal-state-map (kbd "SPC h .") 'eldoc-doc-buffer)
 
-
 ;; Apps
 (define-key evil-normal-state-map (kbd "SPC a") '("Apps 📱" . (keymap)))
 (define-key evil-normal-state-map (kbd "SPC a t") 'vterm)
@@ -97,6 +96,8 @@
 (define-key evil-normal-state-map (kbd "SPC a C") 'start-claude-vterm-other-window)
 (define-key evil-normal-state-map (kbd "SPC a a") 'start-aider-vterm)
 (define-key evil-normal-state-map (kbd "SPC a A") 'start-aider-vterm-other-window)
+(define-key evil-normal-state-map (kbd "SPC a x") 'start-codex-vterm)
+(define-key evil-normal-state-map (kbd "SPC a X") 'start-codex-vterm-other-window)
 (define-key evil-normal-state-map (kbd "SPC a d") 'dictionary-search)
 
 ;; Quit
@@ -105,6 +106,15 @@
 (define-key evil-normal-state-map (kbd "SPC q c") 'reload-config)
 
 ;; copy all keys in evil's "SPC" prefix to magit's "SPC"
-(define-key magit-mode-map (kbd "SPC") (lookup-key evil-normal-state-map (kbd "SPC")))
-(define-key magit-log-mode-map (kbd "SPC") (lookup-key evil-normal-state-map (kbd "SPC")))
-(define-key magit-process-mode-map (kbd "SPC") (lookup-key evil-normal-state-map (kbd "SPC")))
+(dolist (map '(magit-mode-map
+               magit-log-mode-map
+               magit-process-mode-map
+               magit-diff-mode-map
+               magit-revision-mode-map
+               magit-stash-mode-map
+               magit-stashes-mode-map
+               magit-refs-mode-map
+               magit-reflog-mode-map))
+  (when (boundp map)
+    (define-key (symbol-value map) (kbd "SPC")
+                (lookup-key evil-normal-state-map (kbd "SPC")))))

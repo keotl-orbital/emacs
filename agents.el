@@ -114,6 +114,65 @@ Use FALLBACK (typically the process name) for generic \"*vterm*\" buffers."
      (setq agents--poll-timer
            (run-with-timer 3 3 #'agents--poll-state-directory)))))
 
+(defun agents--buffer-state (buf)
+  (with-current-buffer buf
+    (if (not (process-live-p (get-buffer-process buf)))
+        'exited
+      (or (and agents--session-id
+               (plist-get (gethash agents--session-id agents--states) :state))
+          'running))))
+
+(defun agents--state-label (state)
+  (pcase state
+    ('waiting (propertize (format "● %s" state) 'face 'warning))
+    ('done (propertize (format "✓ %s" state) 'face 'success))
+    ('working (format "▶ %s" state))
+    (_ (format "  %s" state))))
+
+(defun agents--project-label (dir)
+  (if-let ((pr (ignore-errors (project-current nil dir))))
+      (project-name pr)
+    (abbreviate-file-name (directory-file-name dir))))
+
+(defun agents--entry (buf)
+  (with-current-buffer buf
+    (let* ((state (agents--buffer-state buf))
+           (info (and agents--session-id
+                      (gethash agents--session-id agents--states)))
+           (since (plist-get info :since))
+           (proc (get-buffer-process buf)))
+      (list buf
+            (vector
+             (agents--state-label state)
+             (if info "claude"
+               (agents--tool-name
+                (buffer-name)
+                (and proc (file-name-nondirectory
+                           (car (process-command proc))))))
+             (agents--project-label default-directory)
+             (buffer-name)
+             (if (memq state '(waiting done exited))
+                 (agents--format-since (and since (- (float-time) since)))
+               "—"))))))
+
+(defun agents--dashboard-entries ()
+  (mapcar #'agents--entry
+          (sort (agents--vterm-buffers)
+                (lambda (a b)
+                  (< (agents--state-sort-key (agents--buffer-state a))
+                     (agents--state-sort-key (agents--buffer-state b)))))))
+
+(defun agents--vterm-mode-advice (orig-fun &rest args)
+  (let* ((id (agents--new-session-id))
+         (vterm-environment
+          (cons (concat "EMACS_AGENT_SESSION=" id)
+                (bound-and-true-p vterm-environment))))
+    (apply orig-fun args)
+    (setq-local agents--session-id id)))
+
+(with-eval-after-load 'vterm
+  (advice-add 'vterm-mode :around #'agents--vterm-mode-advice))
+
 (unless noninteractive (agents-setup))
 
 (provide 'agents)

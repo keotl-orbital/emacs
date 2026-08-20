@@ -83,5 +83,67 @@
 (ert-deftest agents-new-session-id-unique ()
   (should-not (equal (agents--new-session-id) (agents--new-session-id))))
 
+(defmacro agents-test--with-vterm-buffer (varname live-process &rest body)
+  "Create a fake vterm buffer bound to VARNAME; attach a live process if LIVE-PROCESS."
+  (declare (indent 2))
+  `(let ((,varname (generate-new-buffer "*claude*")))
+     (unwind-protect
+         (with-current-buffer ,varname
+           (setq major-mode 'vterm-mode)
+           (when ,live-process
+             (start-process "agents-test-proc" ,varname "cat"))
+           ,@body)
+       (when-let ((p (get-buffer-process ,varname)))
+         (set-process-query-on-exit-flag p nil))
+       (kill-buffer ,varname))))
+
+(ert-deftest agents-buffer-state-exited-when-no-process ()
+  (agents-test--with-state-dir
+   (agents-test--with-vterm-buffer buf nil
+     (should (eq (agents--buffer-state buf) 'exited)))))
+
+(ert-deftest agents-buffer-state-running-without-store-entry ()
+  (agents-test--with-state-dir
+   (agents-test--with-vterm-buffer buf t
+     (should (eq (agents--buffer-state buf) 'running)))))
+
+(ert-deftest agents-buffer-state-uses-store ()
+  (agents-test--with-state-dir
+   (agents-test--with-vterm-buffer buf t
+     (setq agents--session-id "sess-1")
+     (puthash "sess-1" (list :state 'waiting :since (float-time))
+              agents--states)
+     (should (eq (agents--buffer-state buf) 'waiting)))))
+
+(ert-deftest agents-entry-hook-tracked-session ()
+  (agents-test--with-state-dir
+   (agents-test--with-vterm-buffer buf t
+     (setq agents--session-id "sess-1")
+     (puthash "sess-1" (list :state 'waiting :since (- (float-time) 120))
+              agents--states)
+     (pcase-let ((`(,id ,row) (agents--entry buf)))
+       (should (eq id buf))
+       (should (string-match-p "waiting" (aref row 0)))
+       (should (equal (aref row 1) "claude"))
+       (should (equal (aref row 3) (buffer-name buf)))
+       (should (equal (aref row 4) "2m"))))))
+
+(ert-deftest agents-entry-untracked-session-has-no-since ()
+  (agents-test--with-state-dir
+   (agents-test--with-vterm-buffer buf t
+     (pcase-let ((`(,_id ,row) (agents--entry buf)))
+       (should (string-match-p "running" (aref row 0)))
+       (should (equal (aref row 4) "—"))))))
+
+(ert-deftest agents-dashboard-entries-sorted-waiting-first ()
+  (agents-test--with-state-dir
+   (agents-test--with-vterm-buffer running-buf t
+     (agents-test--with-vterm-buffer waiting-buf t
+       (setq agents--session-id "sess-w")
+       (puthash "sess-w" (list :state 'waiting :since (float-time))
+                agents--states)
+       (let ((entries (agents--dashboard-entries)))
+         (should (eq (caar entries) waiting-buf)))))))
+
 (provide 'agents-test)
 ;;; agents-test.el ends here

@@ -262,5 +262,9 @@
                (should (string-match-p "●" text)))))
        (kill-buffer "*agents-sidebar*")))))
 
+(ert-deftest agents-sidebar-open-binding ()
+  (should (eq (lookup-key agents-sidebar-mode-map "o") 'agents-sidebar-open))
+  (should (commandp 'agents-sidebar-open)))
+
 (provide 'agents-test)
 ;;; agents-test.el ends here

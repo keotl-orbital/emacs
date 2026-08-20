@@ -572,9 +572,8 @@ Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent."
                     (window-list))))
     (select-window win)))
 
-(defun agents-sidebar-select ()
-  "Switch to the workspace on the current sidebar line."
-  (interactive)
+(defun agents--sidebar-act ()
+  "Switch to the workspace on the current sidebar line; return non-nil if acted."
   (when-let* ((target (get-text-property (point) 'agents-target)))
     (pcase target
       (`(tab . ,name)
@@ -583,7 +582,23 @@ Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent."
          (tab-bar-switch-to-tab name))
        (agents--sidebar-sync))
       (`(buffer . ,buf) (agents--workspace-open buf)))
+    t))
+
+(defun agents-sidebar-select ()
+  "Switch to the workspace on the current sidebar line."
+  (interactive)
+  (when (agents--sidebar-act)
     (agents--select-non-side-window)))
+
+(defun agents-sidebar-open ()
+  "Open the workspace at point, keeping focus in the sidebar."
+  (interactive)
+  (let ((line (line-number-at-pos)))
+    (when (agents--sidebar-act)
+      (when-let* ((win (get-buffer-window "*agents-sidebar*")))
+        (select-window win)
+        (goto-char (point-min))
+        (forward-line (1- line))))))
 
 (defun agents-sidebar-mouse-select (event)
   (interactive "e")
@@ -592,11 +607,13 @@ Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent."
 
 (define-key agents-sidebar-mode-map (kbd "RET") #'agents-sidebar-select)
 (define-key agents-sidebar-mode-map [mouse-1] #'agents-sidebar-mouse-select)
+(define-key agents-sidebar-mode-map "o" #'agents-sidebar-open)
 (define-key agents-sidebar-mode-map "q" #'agents-sidebar-toggle)
 (with-eval-after-load 'evil
   (evil-set-initial-state 'agents-sidebar-mode 'normal)
   (evil-define-key 'normal agents-sidebar-mode-map
     (kbd "RET") #'agents-sidebar-select
+    "o" #'agents-sidebar-open
     "q" #'agents-sidebar-toggle))
 
 (unless noninteractive (agents-setup))

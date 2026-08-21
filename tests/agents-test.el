@@ -296,10 +296,10 @@
                   ("U" . agents-sidebar-unmark-all)
                   ("D" . agents-sidebar-delete)
                   ("N" . agents-workspace-create)
-                  ("c" . agents-sidebar-claude)
-                  ("x" . agents-sidebar-codex)
-                  ("t" . agents-sidebar-vterm)))
-    (should (eq (lookup-key agents-sidebar-mode-map (car pair)) (cdr pair)))))
+                  ("a c" . agents-sidebar-claude)
+                  ("a x" . agents-sidebar-codex)
+                  ("a t" . agents-sidebar-vterm)))
+    (should (eq (lookup-key agents-sidebar-mode-map (kbd (car pair))) (cdr pair)))))
 
 (ert-deftest agents-sidebar-mark-and-unmark ()
   (agents-test--with-state-dir

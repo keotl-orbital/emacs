@@ -1004,9 +1004,9 @@ Session workspaces are killed; plain tabs are closed."
 
 (define-key agents-sidebar-mode-map "D" #'agents-sidebar-delete)
 (define-key agents-sidebar-mode-map "N" #'agents-workspace-create)
-(define-key agents-sidebar-mode-map "c" #'agents-sidebar-claude)
-(define-key agents-sidebar-mode-map "x" #'agents-sidebar-codex)
-(define-key agents-sidebar-mode-map "t" #'agents-sidebar-vterm)
+(define-key agents-sidebar-mode-map (kbd "a c") #'agents-sidebar-claude)
+(define-key agents-sidebar-mode-map (kbd "a x") #'agents-sidebar-codex)
+(define-key agents-sidebar-mode-map (kbd "a t") #'agents-sidebar-vterm)
 (with-eval-after-load 'evil
   (evil-set-initial-state 'agents-sidebar-mode 'normal)
   (evil-define-key 'normal agents-sidebar-mode-map
@@ -1019,9 +1019,9 @@ Session workspaces are killed; plain tabs are closed."
     "U" #'agents-sidebar-unmark-all
     "D" #'agents-sidebar-delete
     "N" #'agents-workspace-create
-    "c" #'agents-sidebar-claude
-    "x" #'agents-sidebar-codex
-    "t" #'agents-sidebar-vterm))
+    (kbd "a c") #'agents-sidebar-claude
+    (kbd "a x") #'agents-sidebar-codex
+    (kbd "a t") #'agents-sidebar-vterm))
 
 (unless noninteractive (agents-setup))
 

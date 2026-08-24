@@ -409,16 +409,22 @@ each state file gets its own watch to catch content overwrites.")
     ("Notification" . "waiting")
     ("Stop" . "done")))
 
+(defconst agents--codex-hook-events
+  '(("UserPromptSubmit" . "working")
+    ("PostToolUse" . "working")
+    ("PermissionRequest" . "waiting")
+    ("Stop" . "done")))
+
 (defconst agents--claude-hook-command-format
   (concat "[ -n \"$EMACS_AGENT_SESSION\" ] && "
           "echo %s > \"$HOME/.cache/emacs-agents/$EMACS_AGENT_SESSION\" "
           "|| true"))
 
-(defun agents--merged-claude-hooks (json)
-  "Return settings alist JSON with the agents hook entries merged in.
+(defun agents--merged-hooks (json events)
+  "Return settings alist JSON with the agents hook EVENTS merged in.
 Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent."
   (let ((hooks (alist-get 'hooks json)))
-    (dolist (pair agents--claude-hook-events)
+    (dolist (pair events)
       (let* ((event (intern (car pair)))
              (cmd (format agents--claude-hook-command-format (cdr pair)))
              (entries (alist-get event hooks))
@@ -439,11 +445,12 @@ Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent."
     (setf (alist-get 'hooks json) hooks)
     json))
 
-(defun agents-install-claude-hooks ()
-  "Merge the agents state hooks into ~/.claude/settings.json, with confirmation."
-  (interactive)
-  (let* ((file (expand-file-name "~/.claude/settings.json"))
-         (json (when (file-exists-p file)
+(defun agents--merged-claude-hooks (json)
+  (agents--merged-hooks json agents--claude-hook-events))
+
+(defun agents--install-hooks (file events)
+  "Merge the agents hook EVENTS into the JSON hooks FILE, with confirmation."
+  (let* ((json (when (file-exists-p file)
                  (with-temp-buffer
                    (insert-file-contents file)
                    (condition-case nil
@@ -451,7 +458,7 @@ Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent."
                                           :array-type 'array)
                      (error (user-error
                              "%s does not parse; merge hooks manually" file))))))
-         (merged (agents--merged-claude-hooks (copy-tree json t))))
+         (merged (agents--merged-hooks (copy-tree json t) events)))
     (if (equal json merged)
         (message "Claude hooks already installed")
       (with-current-buffer (get-buffer-create "*agents-claude-hooks*")
@@ -466,7 +473,23 @@ Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent."
         (with-temp-file file
           (insert (json-serialize merged))
           (json-pretty-print-buffer))
-        (message "Hooks installed; restart running claude sessions to apply")))))
+        (message "Hooks installed into %s; restart running sessions to apply"
+                 file)))))
+
+(defun agents-install-claude-hooks ()
+  "Merge the agents state hooks into ~/.claude/settings.json, with confirmation."
+  (interactive)
+  (agents--install-hooks (expand-file-name "~/.claude/settings.json")
+                         agents--claude-hook-events))
+
+(defun agents-install-codex-hooks ()
+  "Merge the agents state hooks into ~/.codex/hooks.json, with confirmation.
+Codex requires trusting new hooks: it will ask on its next interactive
+run (its state icon reports via PermissionRequest instead of
+Notification, otherwise identically to claude)."
+  (interactive)
+  (agents--install-hooks (expand-file-name "~/.codex/hooks.json")
+                         agents--codex-hook-events))
 
 (require 'tab-bar)
 

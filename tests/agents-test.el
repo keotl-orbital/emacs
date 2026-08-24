@@ -514,5 +514,12 @@
          (agents--notify-callback (list 'desc 'created file))
          (should (gethash file agents--file-watches)))))))
 
+(ert-deftest agents-merged-codex-hooks ()
+  (let ((merged (agents--merged-hooks nil agents--codex-hook-events)))
+    (dolist (event '(UserPromptSubmit PostToolUse PermissionRequest Stop))
+      (should (memq event (agents-test--hook-events merged))))
+    (should-not (memq 'Notification (agents-test--hook-events merged)))
+    (should (commandp 'agents-install-codex-hooks))))
+
 (provide 'agents-test)
 ;;; agents-test.el ends here

@@ -410,81 +410,6 @@
       (tab-bar-rename-tab "")
       (unless had (tab-bar-mode -1)))))
 
-(defmacro agents-test--with-snapshot-file (&rest body)
-  `(let ((agents-snapshot-file (make-temp-file "agents-snapshot")))
-     (unwind-protect (progn ,@body)
-       (ignore-errors (delete-file agents-snapshot-file)))))
-
-(defun agents-test--fake-app-buffer (name)
-  (let ((buf (get-buffer-create name)))
-    (with-current-buffer buf (setq major-mode 'vterm-mode))
-    buf))
-
-(ert-deftest agents-workspace-apps-discovery ()
-  (let ((bufs (mapcar #'agents-test--fake-app-buffer
-                      '("*feat:claude*" "*feat:vterm*" "*other:claude*"))))
-    (unwind-protect
-        (let ((apps (agents--workspace-apps "feat")))
-          (should (member "claude" apps))
-          (should (member "vterm" apps))
-          (should (= (length apps) 2)))
-      (mapc #'kill-buffer bufs))))
-
-(ert-deftest agents-snapshot-roundtrip ()
-  (agents-test--with-snapshot-file
-   (let ((agents--workspaces (list (cons "feat" (expand-file-name "~/"))))
-         (tab-bar-mode nil)
-         (buf (agents-test--fake-app-buffer "*feat:claude*")))
-     (unwind-protect
-         (progn
-           (agents-workspaces-save)
-           (let ((snapshot (agents--snapshot-read)))
-             (should (equal (alist-get 'workspaces snapshot) agents--workspaces))
-             (should (equal (cdr (assoc "feat" (alist-get 'apps snapshot)))
-                            '("claude")))
-             (should-not (alist-get 'layouts snapshot))))
-       (kill-buffer buf)))))
-
-(ert-deftest agents-workspaces-restore-merges-and-skips ()
-  (agents-test--with-snapshot-file
-   (let ((had tab-bar-mode)
-         (missing (make-temp-file "agents-gone" t)))
-     (delete-directory missing)
-     (unwind-protect
-         (progn
-           (let ((agents--workspaces
-                  (list (cons "kept" (expand-file-name "~/"))
-                        (cons "gone" missing))))
-             (agents-workspaces-save))
-           (let ((agents--workspaces (list (cons "kept" "/elsewhere/"))))
-             (agents-workspaces-restore)
-             (should (equal (agents--workspace-root "kept") "/elsewhere/"))
-             (should-not (assoc "gone" agents--workspaces))
-             (should (= (length agents--workspaces) 1))))
-       (tab-bar-rename-tab "")
-       (unless had (tab-bar-mode -1))))))
-
-(ert-deftest agents-workspaces-restore-restores-registry ()
-  (agents-test--with-snapshot-file
-   (let ((had tab-bar-mode))
-     (unwind-protect
-         (progn
-           (let ((agents--workspaces (list (cons "feat" (expand-file-name "~/")))))
-             (agents-workspaces-save))
-           (let ((agents--workspaces nil))
-             (agents-workspaces-restore)
-             (should (equal (agents--workspace-root "feat")
-                            (expand-file-name "~/")))))
-       (dolist (name (agents--tab-names))
-         (when (string-prefix-p "ws:" name)
-           (ignore-errors (tab-bar-close-tab-by-name name))))
-       (tab-bar-rename-tab "")
-       (unless had (tab-bar-mode -1))))))
-
-(ert-deftest agents-workspaces-restore-errors-without-snapshot ()
-  (let ((agents-snapshot-file "/nonexistent/agents-snapshot.eld"))
-    (should-error (agents-workspaces-restore) :type 'user-error)))
-
 (ert-deftest agents-file-watch-bookkeeping ()
   (agents-test--with-state-dir
    (let ((agents--file-watches (make-hash-table :test 'equal))
@@ -533,6 +458,116 @@
       (should (memq event (agents-test--hook-events merged))))
     (should-not (memq 'Notification (agents-test--hook-events merged)))
     (should (commandp 'agents-install-codex-hooks))))
+
+(defun agents-test--fake-app-buffer (name)
+  (let ((buf (get-buffer-create name)))
+    (with-current-buffer buf (setq major-mode 'vterm-mode))
+    buf))
+
+(defmacro agents-test--with-stub-vterm (sent-var &rest body)
+  "Run BODY with `vterm' stubbed; commands sent are pushed onto SENT-VAR."
+  (declare (indent 1))
+  `(let ((,sent-var nil))
+     (cl-letf (((symbol-function 'vterm)
+                (lambda (&optional _)
+                  (let ((buf (generate-new-buffer "*vterm-stub*")))
+                    (set-buffer buf)
+                    (setq major-mode 'vterm-mode)
+                    buf)))
+               ((symbol-function 'vterm-send-string)
+                (lambda (s) (push s ,sent-var)))
+               ((symbol-function 'vterm-send-return) #'ignore))
+       ,@body)))
+
+(ert-deftest agents-parse-app-buffer-name ()
+  (should (equal (agents--parse-app-buffer-name "*feat:claude*") '("feat" . "claude")))
+  (should-not (agents--parse-app-buffer-name "*claude*"))
+  (should-not (agents--parse-app-buffer-name "*vterm*<2>"))
+  (should-not (agents--parse-app-buffer-name "sharepoint.txt")))
+
+(ert-deftest agents-desktop-save-buffer-data ()
+  (let ((buf (agents-test--fake-app-buffer "*feat:claude*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (setq default-directory (expand-file-name "~/"))
+          (should (equal (agents--desktop-save-buffer nil)
+                         (list "feat" "claude" (expand-file-name "~/")))))
+      (kill-buffer buf)))
+  (with-temp-buffer
+    (rename-buffer "*vterm*" t)
+    (should-not (agents--desktop-save-buffer nil))))
+
+(ert-deftest agents-desktop-restore-buffer-recreates-app ()
+  (agents-test--with-stub-vterm sent
+    (let ((agents-desktop-relaunch-agents t)
+          (agents-workspace-restore-commands '(("claude" . "claude --continue"))))
+      (let ((buf (agents--desktop-restore-buffer
+                  nil "*feat:claude*" (list "feat" "claude" (expand-file-name "~/")))))
+        (unwind-protect
+            (progn
+              (should (bufferp buf))
+              (should (equal (buffer-name buf) "*feat:claude*"))
+              (should (equal (buffer-local-value 'default-directory buf)
+                             (expand-file-name "~/")))
+              (should (equal sent '("claude --continue")))
+              (should (eq (agents--desktop-restore-buffer
+                           nil "*feat:claude*" (list "feat" "claude" (expand-file-name "~/")))
+                          buf)))
+          (kill-buffer buf))))))
+
+(ert-deftest agents-desktop-restore-buffer-dormant-when-disabled ()
+  (agents-test--with-stub-vterm sent
+    (let ((agents-desktop-relaunch-agents nil))
+      (let ((buf (agents--desktop-restore-buffer
+                  nil "*feat:claude*" (list "feat" "claude" (expand-file-name "~/")))))
+        (unwind-protect
+            (progn (should (bufferp buf)) (should-not sent))
+          (kill-buffer buf))))))
+
+(ert-deftest agents-desktop-restore-buffer-skips-bad-data ()
+  (agents-test--with-stub-vterm sent
+    (should-not (agents--desktop-restore-buffer nil "*vterm*" nil))
+    (should-not (agents--desktop-restore-buffer
+                 nil "*feat:claude*" (list "feat" "claude" "/nonexistent/dir/")))))
+
+(defvar desktop-first-buffer)
+(defvar desktop-buffer-ok-count)
+(defvar desktop-buffer-fail-count)
+
+(ert-deftest agents-desktop-file-roundtrip-recreates-app-buffer ()
+  "Save a desktop with an app vterm, then load the desktop file into a
+clean state and check the handler recreates the buffer."
+  (agents-test--with-stub-vterm sent
+    (let* ((dir (file-name-as-directory (make-temp-file "agents-desktop" t)))
+           (agents--workspaces (list (cons "feat" (expand-file-name "~/"))))
+           (agents-desktop-relaunch-agents t)
+           (desktop-globals-to-save '(agents--workspaces))
+           (desktop-buffer-mode-handlers
+            (list (cons 'vterm-mode #'agents--desktop-restore-buffer)))
+           (desktop-restore-frames nil)
+           (buf (agents-test--fake-app-buffer "*feat:claude*")))
+      (unwind-protect
+          (progn
+            (with-current-buffer buf
+              (setq default-directory (expand-file-name "~/"))
+              (agents--desktop-mark-buffer))
+            (desktop-save dir t)
+            (should (string-match-p "feat:claude"
+                                    (with-temp-buffer
+                                      (insert-file-contents
+                                       (expand-file-name ".emacs.desktop" dir))
+                                      (buffer-string))))
+            (kill-buffer buf)
+            (setq agents--workspaces nil)
+            (let ((desktop-first-buffer nil)
+                  (desktop-buffer-ok-count 0)
+                  (desktop-buffer-fail-count 0))
+              (load (expand-file-name ".emacs.desktop" dir) nil t))
+            (should (equal (agents--workspace-root "feat") (expand-file-name "~/")))
+            (should (get-buffer "*feat:claude*"))
+            (should (equal sent '("claude --continue"))))
+        (when (get-buffer "*feat:claude*") (kill-buffer "*feat:claude*"))
+        (delete-directory dir t)))))
 
 (provide 'agents-test)
 ;;; agents-test.el ends here

@@ -38,11 +38,13 @@
 ;; The dir-local takes effect when the command is invoked from a buffer
 ;; inside that project (the defvar provides the default elsewhere).
 ;;
-;; Workspaces survive a full quit: a snapshot (registry, per-workspace
-;; app buffers, window layouts) is written to `agents-snapshot-file' on
-;; exit (and with `agents-workspaces-save'); `agents-workspaces-restore'
-;; brings everything back, relaunching agents with the commands in
-;; `agents-workspace-restore-commands' (claude resumes via --continue).
+;; Workspaces persist through `desktop-save-mode': the registry rides in
+;; `desktop-globals-to-save', tabs and layouts in desktop's frameset,
+;; and workspace app vterms (*WORKSPACE:APP*) through a desktop buffer
+;; handler that recreates them in their root and reruns the command from
+;; `agents-workspace-restore-commands' (claude resumes via --continue;
+;; set `agents-desktop-relaunch-agents' to nil for dormant shells).
+;; desktop-save-mode must be enabled for any of this to happen.
 
 ;;; Code:
 
@@ -195,7 +197,9 @@ each state file gets its own watch to catch content overwrites.")
   (make-directory agents-state-directory t)
   (agents--sweep-stale-files)
   (add-hook 'kill-buffer-hook #'agents--cleanup-killed-buffer)
-  (add-hook 'kill-emacs-hook #'agents--snapshot-on-kill)
+  (add-hook 'vterm-mode-hook #'agents--desktop-mark-buffer)
+  (add-to-list 'desktop-buffer-mode-handlers
+               (cons 'vterm-mode #'agents--desktop-restore-buffer))
   (unless (memq 'agents--badge global-mode-string)
     (setq global-mode-string
           (append (if (listp global-mode-string)
@@ -666,130 +670,56 @@ workspace root when the workspace is registered."
   (interactive)
   (agents--workspace-app "codex" "codex"))
 
-(defvar agents-snapshot-file (expand-file-name "~/.cache/emacs-agents-snapshot.eld")
-  "File holding the workspace snapshot for `agents-workspaces-restore'.")
-
 (defvar agents-workspace-restore-commands
   '(("claude" . "claude --continue")
     ("codex" . "codex resume --last")
     ("vterm" . nil))
-  "Command used when restoring a workspace app vterm, keyed by app name.
+  "Command run when desktop restores a workspace app vterm, keyed by app.
 nil runs no command (plain shell); an unlisted app runs its own name.")
 
-(defun agents--workspace-apps (workspace)
-  "App names with a live *WORKSPACE:app* buffer."
-  (let ((prefix (format "*%s:" workspace)))
-    (delq nil
-          (mapcar (lambda (b)
-                    (let ((name (buffer-name b)))
-                      (and (string-prefix-p prefix name)
-                           (string-suffix-p "*" name)
-                           (substring name (length prefix) -1))))
-                  (agents--vterm-buffers)))))
+(defvar agents-desktop-relaunch-agents t
+  "When non-nil, desktop restore reruns each app's restore command.
+When nil, restored app vterms are plain shells in the workspace root.")
 
-(defun agents--capture-layouts ()
-  "Per-workspace serializable window layouts of existing ws tabs."
-  (when (bound-and-true-p tab-bar-mode)
-    (let ((origin (alist-get 'name (tab-bar--current-tab)))
-          (layouts nil))
-      (dolist (ws agents--workspaces)
-        (let ((tab-name (agents--workspace-tab-name (car ws))))
-          (when (member tab-name (agents--tab-names))
-            (tab-bar-select-tab-by-name tab-name)
-            (push (cons (car ws) (window-state-get (window-main-window) t))
-                  layouts))))
-      (when origin (ignore-errors (tab-bar-select-tab-by-name origin)))
-      (nreverse layouts))))
-
-(defun agents--snapshot-data ()
-  `((version . 1)
-    (workspaces . ,agents--workspaces)
-    (apps . ,(mapcar (lambda (ws)
-                       (cons (car ws) (agents--workspace-apps (car ws))))
-                     agents--workspaces))
-    (layouts . ,(agents--capture-layouts))))
-
-(defun agents--snapshot-read ()
-  (when (file-exists-p agents-snapshot-file)
-    (with-temp-buffer
-      (insert-file-contents agents-snapshot-file)
-      (read (current-buffer)))))
-
-(defun agents-workspaces-save ()
-  "Write the workspace snapshot (registry, apps, layouts) to disk."
-  (interactive)
-  (with-temp-file agents-snapshot-file
-    (let ((print-length nil) (print-level nil) (print-circle t))
-      (prin1 (agents--snapshot-data) (current-buffer))))
-  (message "Saved %d workspace%s to %s"
-           (length agents--workspaces)
-           (if (cdr agents--workspaces) "s" "")
-           agents-snapshot-file))
-
-(defun agents--snapshot-on-kill ()
-  (ignore-errors
-    (when agents--workspaces (agents-workspaces-save))))
+(defun agents--parse-app-buffer-name (name)
+  "Return (WORKSPACE . APP) for a *WORKSPACE:APP* buffer NAME, else nil."
+  (when (string-match "\\`\\*\\([^:*]+\\):\\([^:*]+\\)\\*\\'" name)
+    (cons (match-string 1 name) (match-string 2 name))))
 
 (defun agents--restore-app (workspace app root)
-  "Recreate the *WORKSPACE:APP* vterm in ROOT unless it already exists."
+  "Recreate the *WORKSPACE:APP* vterm in ROOT unless it exists; return it."
   (let ((buffer-name (agents--workspace-app-buffer-name workspace app)))
-    (unless (get-buffer buffer-name)
-      (let ((default-directory root))
-        (save-window-excursion
-          (with-current-buffer (vterm t)
-            (when-let* ((command (if (assoc app agents-workspace-restore-commands)
-                                     (cdr (assoc app agents-workspace-restore-commands))
-                                   app)))
-              (vterm-send-string command)
-              (vterm-send-return))
-            (rename-buffer buffer-name t)
-            (when (fboundp 'vterm-app-mode)
-              (vterm-app-mode 1))))))))
+    (or (get-buffer buffer-name)
+        (let ((default-directory root))
+          (save-window-excursion
+            (with-current-buffer (vterm t)
+              (when-let* ((command
+                           (and agents-desktop-relaunch-agents
+                                (if (assoc app agents-workspace-restore-commands)
+                                    (cdr (assoc app agents-workspace-restore-commands))
+                                  app))))
+                (vterm-send-string command)
+                (vterm-send-return))
+              (rename-buffer buffer-name t)
+              (when (fboundp 'vterm-app-mode)
+                (vterm-app-mode 1))
+              (current-buffer)))))))
 
-(defun agents-workspaces-restore ()
-  "Restore workspaces, their agents, and layouts from the last snapshot.
-Existing workspaces are never overwritten; workspaces whose root
-directory no longer exists are skipped."
-  (interactive)
-  (let ((snapshot (or (agents--snapshot-read)
-                      (user-error "No workspace snapshot at %s"
-                                  agents-snapshot-file))))
-    (agents--ensure-tab-bar)
-    (let* ((apps (alist-get 'apps snapshot))
-           (layouts (alist-get 'layouts snapshot))
-           (origin (alist-get 'name (tab-bar--current-tab)))
-           (restored 0)
-           (skipped nil))
-      (dolist (ws (alist-get 'workspaces snapshot))
-        (let ((name (car ws)) (root (cdr ws)))
-          (cond
-           ((assoc name agents--workspaces)
-            (push (format "%s (already exists)" name) skipped))
-           ((not (file-directory-p root))
-            (push (format "%s (missing %s)" name root) skipped))
-           (t
-            (setq agents--workspaces
-                  (append agents--workspaces (list (cons name root))))
-            (dolist (app (cdr (assoc name apps)))
-              (agents--restore-app name app root))
-            (let ((tab-name (agents--workspace-tab-name name)))
-              (unless (member tab-name (agents--tab-names))
-                (tab-bar-new-tab)
-                (tab-bar-rename-tab tab-name))
-              (tab-bar-select-tab-by-name tab-name)
-              (if-let* ((layout (cdr (assoc name layouts))))
-                  (ignore-errors
-                    (window-state-put layout (window-main-window) 'safe))
-                (delete-other-windows)
-                (dired root)))
-            (cl-incf restored)))))
-      (when origin (ignore-errors (tab-bar-select-tab-by-name origin)))
-      (agents--sidebar-sync)
-      (message "Restored %d workspace%s%s"
-               restored (if (= restored 1) "" "s")
-               (if skipped
-                   (format "; skipped: %s" (string-join (nreverse skipped) ", "))
-                 "")))))
+(defun agents--desktop-save-buffer (_desktop-dirname)
+  "Desktop data for a workspace app vterm: (WORKSPACE APP ROOT), else nil."
+  (when-let* ((parsed (agents--parse-app-buffer-name (buffer-name))))
+    (list (car parsed) (cdr parsed) default-directory)))
+
+(defun agents--desktop-mark-buffer ()
+  (setq-local desktop-save-buffer #'agents--desktop-save-buffer))
+
+(defun agents--desktop-restore-buffer (_file-name _buffer-name misc)
+  "Desktop handler for vterm buffers: recreate workspace apps from MISC."
+  (pcase misc
+    (`(,workspace ,app ,root)
+     (when (and (stringp workspace) (stringp app) (stringp root)
+                (file-directory-p root))
+       (agents--restore-app workspace app root)))))
 
 (defun agents-workspace-switch ()
   "Pick a workspace: plain tabs (main etc.) or a registered workspace."

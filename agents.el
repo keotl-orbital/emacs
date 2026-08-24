@@ -136,10 +136,39 @@ Use FALLBACK (typically the process name) for generic \"*vterm*\" buffers."
     (when (and buf (get-buffer-window buf t))
       (with-current-buffer buf (revert-buffer)))))
 
+(defvar agents--file-watches (make-hash-table :test 'equal)
+  "Map of state-file path to its file-notify descriptor.
+kqueue only reports directory-entry changes for the directory watch, so
+each state file gets its own watch to catch content overwrites.")
+
+(defun agents--watch-state-file (file)
+  (when (and (not (gethash file agents--file-watches))
+             (file-exists-p file))
+    (ignore-errors
+      (puthash file
+               (file-notify-add-watch file '(change)
+                                      #'agents--file-notify-callback)
+               agents--file-watches))))
+
+(defun agents--unwatch-state-file (file)
+  (when-let* ((desc (gethash file agents--file-watches)))
+    (ignore-errors (file-notify-rm-watch desc))
+    (remhash file agents--file-watches)))
+
+(defun agents--file-notify-callback (event)
+  (pcase-let ((`(,_desc ,action ,file . ,_) event))
+    (pcase action
+      ('changed
+       (agents--handle-state-file file)
+       (agents--after-state-change))
+      ((or 'deleted 'renamed 'stopped)
+       (agents--unwatch-state-file file)))))
+
 (defun agents--notify-callback (event)
   (pcase-let ((`(,_desc ,action ,file . ,_) event))
     (when (memq action '(created changed))
       (agents--handle-state-file file)
+      (agents--watch-state-file file)
       (agents--after-state-change))))
 
 (defun agents--poll-state-directory ()
@@ -149,8 +178,9 @@ Use FALLBACK (typically the process name) for generic \"*vterm*\" buffers."
 
 (defun agents--cleanup-killed-buffer ()
   (when (and agents--session-id (derived-mode-p 'vterm-mode))
-    (ignore-errors
-      (delete-file (expand-file-name agents--session-id agents-state-directory)))
+    (let ((file (expand-file-name agents--session-id agents-state-directory)))
+      (agents--unwatch-state-file file)
+      (ignore-errors (delete-file file)))
     (remhash agents--session-id agents--states)
     (run-at-time 0 nil #'agents--after-state-change)))
 
@@ -159,6 +189,9 @@ Use FALLBACK (typically the process name) for generic \"*vterm*\" buffers."
   (when agents--watch
     (ignore-errors (file-notify-rm-watch agents--watch))
     (setq agents--watch nil))
+  (maphash (lambda (_file desc) (ignore-errors (file-notify-rm-watch desc)))
+           agents--file-watches)
+  (clrhash agents--file-watches)
   (make-directory agents-state-directory t)
   (agents--sweep-stale-files)
   (add-hook 'kill-buffer-hook #'agents--cleanup-killed-buffer)
@@ -170,9 +203,12 @@ Use FALLBACK (typically the process name) for generic \"*vterm*\" buffers."
                     (list global-mode-string))
                   '(agents--badge))))
   (condition-case nil
-      (setq agents--watch
-            (file-notify-add-watch agents-state-directory '(change)
-                                   #'agents--notify-callback))
+      (progn
+        (setq agents--watch
+              (file-notify-add-watch agents-state-directory '(change)
+                                     #'agents--notify-callback))
+        (dolist (f (directory-files agents-state-directory t "\\`[^.]"))
+          (agents--watch-state-file f)))
     (error
      (setq agents--poll-timer
            (run-with-timer 3 3 #'agents--poll-state-directory))))

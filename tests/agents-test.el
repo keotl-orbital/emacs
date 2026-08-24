@@ -472,5 +472,47 @@
   (let ((agents-snapshot-file "/nonexistent/agents-snapshot.eld"))
     (should-error (agents-workspaces-restore) :type 'user-error)))
 
+(ert-deftest agents-file-watch-bookkeeping ()
+  (agents-test--with-state-dir
+   (let ((agents--file-watches (make-hash-table :test 'equal))
+         (added nil) (removed nil))
+     (cl-letf (((symbol-function 'file-notify-add-watch)
+                (lambda (file _flags _cb) (push file added) (gensym)))
+               ((symbol-function 'file-notify-rm-watch)
+                (lambda (desc) (push desc removed))))
+       (let ((file (agents-test--write-state "sess-1" "working")))
+         (agents--watch-state-file file)
+         (should (= (length added) 1))
+         (should (gethash file agents--file-watches))
+         (agents--watch-state-file file)
+         (should (= (length added) 1))
+         (agents--watch-state-file
+          (expand-file-name "missing" agents-state-directory))
+         (should (= (length added) 1))
+         (agents--unwatch-state-file file)
+         (should (= (length removed) 1))
+         (should-not (gethash file agents--file-watches)))))))
+
+(ert-deftest agents-file-callback-updates-store-and-unwatches ()
+  (agents-test--with-state-dir
+   (let ((agents--file-watches (make-hash-table :test 'equal)))
+     (let ((file (agents-test--write-state "sess-1" "waiting")))
+       (puthash file 'desc agents--file-watches)
+       (cl-letf (((symbol-function 'file-notify-rm-watch) #'ignore))
+         (agents--file-notify-callback (list 'desc 'changed file))
+         (should (eq (plist-get (gethash "sess-1" agents--states) :state)
+                     'waiting))
+         (agents--file-notify-callback (list 'desc 'deleted file))
+         (should-not (gethash file agents--file-watches)))))))
+
+(ert-deftest agents-dir-callback-adds-file-watch ()
+  (agents-test--with-state-dir
+   (let ((agents--file-watches (make-hash-table :test 'equal)))
+     (cl-letf (((symbol-function 'file-notify-add-watch)
+                (lambda (&rest _) (gensym))))
+       (let ((file (agents-test--write-state "sess-1" "working")))
+         (agents--notify-callback (list 'desc 'created file))
+         (should (gethash file agents--file-watches)))))))
+
 (provide 'agents-test)
 ;;; agents-test.el ends here

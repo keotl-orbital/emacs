@@ -404,16 +404,19 @@ each state file gets its own watch to catch content overwrites.")
          (nth (mod (1+ (or pos -1)) (length bufs)) bufs))))))
 
 (defconst agents--claude-hook-events
-  '(("UserPromptSubmit" . "working")
-    ("PostToolUse" . "working")
-    ("Notification" . "waiting")
-    ("Stop" . "done")))
+  '(("UserPromptSubmit" "working")
+    ("PostToolUse" "working")
+    ("Notification" "waiting")
+    ("PermissionRequest" "waiting")
+    ("PreToolUse" "waiting" "AskUserQuestion")
+    ("Stop" "done"))
+  "Hook specs as (EVENT STATE &optional MATCHER).")
 
 (defconst agents--codex-hook-events
-  '(("UserPromptSubmit" . "working")
-    ("PostToolUse" . "working")
-    ("PermissionRequest" . "waiting")
-    ("Stop" . "done")))
+  '(("UserPromptSubmit" "working")
+    ("PostToolUse" "working")
+    ("PermissionRequest" "waiting")
+    ("Stop" "done")))
 
 (defconst agents--claude-hook-command-format
   (concat "[ -n \"$EMACS_AGENT_SESSION\" ] && "
@@ -424,9 +427,10 @@ each state file gets its own watch to catch content overwrites.")
   "Return settings alist JSON with the agents hook EVENTS merged in.
 Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent."
   (let ((hooks (alist-get 'hooks json)))
-    (dolist (pair events)
-      (let* ((event (intern (car pair)))
-             (cmd (format agents--claude-hook-command-format (cdr pair)))
+    (dolist (spec events)
+      (let* ((event (intern (nth 0 spec)))
+             (cmd (format agents--claude-hook-command-format (nth 1 spec)))
+             (matcher (nth 2 spec))
              (entries (alist-get event hooks))
              (present
               (cl-some
@@ -440,8 +444,10 @@ Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent."
           (setf (alist-get event hooks)
                 (vconcat entries
                          (vector
-                          `((hooks . ,(vector `((type . "command")
-                                                (command . ,cmd)))))))))))
+                          (append
+                           (when matcher `((matcher . ,matcher)))
+                           `((hooks . ,(vector `((type . "command")
+                                                 (command . ,cmd))))))))))))
     (setf (alist-get 'hooks json) hooks)
     json))
 

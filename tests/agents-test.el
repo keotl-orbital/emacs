@@ -185,8 +185,21 @@
 
 (ert-deftest agents-merged-claude-hooks-from-empty ()
   (let ((merged (agents--merged-claude-hooks nil)))
-    (dolist (event '(UserPromptSubmit PostToolUse Notification Stop))
+    (dolist (event '(UserPromptSubmit PostToolUse Notification
+                     PermissionRequest PreToolUse Stop))
       (should (memq event (agents-test--hook-events merged))))
+    (let* ((pre (alist-get 'PreToolUse (alist-get 'hooks merged)))
+           (entry (aref pre 0)))
+      (should (equal (alist-get 'matcher entry) "AskUserQuestion"))
+      (should (string-match-p "waiting"
+                              (alist-get 'command
+                                         (aref (alist-get 'hooks entry) 0)))))
+    (let* ((perm (alist-get 'PermissionRequest (alist-get 'hooks merged)))
+           (entry (aref perm 0)))
+      (should-not (alist-get 'matcher entry))
+      (should (string-match-p "waiting"
+                              (alist-get 'command
+                                         (aref (alist-get 'hooks entry) 0)))))
     (let* ((stop (alist-get 'Stop (alist-get 'hooks merged)))
            (cmd (alist-get 'command (aref (alist-get 'hooks (aref stop 0)) 0))))
       (should (string-match-p "emacs-agents" cmd))

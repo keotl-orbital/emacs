@@ -408,7 +408,7 @@ each state file gets its own watch to catch content overwrites.")
     ("PostToolUse" "working")
     ("Notification" "waiting")
     ("PermissionRequest" "waiting")
-    ("PreToolUse" "waiting" "AskUserQuestion")
+    ("PreToolUse" "waiting" "AskUserQuestion|ExitPlanMode")
     ("Stop" "done"))
   "Hook specs as (EVENT STATE &optional MATCHER).")
 

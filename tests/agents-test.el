@@ -190,7 +190,7 @@
       (should (memq event (agents-test--hook-events merged))))
     (let* ((pre (alist-get 'PreToolUse (alist-get 'hooks merged)))
            (entry (aref pre 0)))
-      (should (equal (alist-get 'matcher entry) "AskUserQuestion"))
+      (should (equal (alist-get 'matcher entry) "AskUserQuestion|ExitPlanMode"))
       (should (string-match-p "waiting"
                               (alist-get 'command
                                          (aref (alist-get 'hooks entry) 0)))))

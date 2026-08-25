@@ -1,16 +1,16 @@
-;;; agents.el --- Overview of vterm agent sessions -*- lexical-binding: t; -*-
+;;; elmux.el --- Overview of vterm agent sessions -*- lexical-binding: t; -*-
 
 ;;; Commentary:
 
-;; Workspaces are created intentionally with `agents-workspace-create',
+;; Workspaces are created intentionally with `elmux-workspace-create',
 ;; which registers a NAME -> root DIRECTORY pair.  They appear in the
-;; sidebar (`agents-sidebar-toggle') next to `main'; switching to one
+;; sidebar (`elmux-sidebar-toggle') next to `main'; switching to one
 ;; creates its tab lazily, landing in a dired of the root.  A
 ;; workspace's sidebar icon reflects the most urgent Claude hook state
 ;; among vterm sessions whose `default-directory' is under its root.
 ;;
 ;; Build variants of the create command by computing a directory and
-;; calling `agents-workspace-create' from Lisp.  Example: create a git
+;; calling `elmux-workspace-create' from Lisp.  Example: create a git
 ;; worktree and register it, with the worktree location configured
 ;; per-project through .dir-locals.el:
 ;;
@@ -30,7 +30,7 @@
 ;;            (format "git worktree add %s -b %s"
 ;;                    (shell-quote-argument dir)
 ;;                    (shell-quote-argument branch)))))
-;;       (agents-workspace-create branch dir)))
+;;       (elmux-workspace-create branch dir)))
 ;;
 ;;   ;; ~/Documents/project100x/.dir-locals.el
 ;;   ((nil . ((my-worktree-directory . ".worktrees/"))))
@@ -42,8 +42,8 @@
 ;; `desktop-globals-to-save', tabs and layouts in desktop's frameset,
 ;; and workspace app vterms (*WORKSPACE:APP*) through a desktop buffer
 ;; handler that recreates them in their root and reruns the command from
-;; `agents-workspace-restore-commands' (claude resumes via --continue;
-;; set `agents-desktop-relaunch-agents' to nil for dormant shells).
+;; `elmux-workspace-restore-commands' (claude resumes via --continue;
+;; set `elmux-desktop-relaunch-agents' to nil for dormant shells).
 ;; desktop-save-mode must be enabled for any of this to happen.
 
 ;;; Code:
@@ -58,25 +58,25 @@
 
 (defvar vterm-environment)
 
-(defvar agents-state-directory (expand-file-name "~/.cache/emacs-agents/")
+(defvar elmux-state-directory (expand-file-name "~/.cache/elmux/")
   "Directory where Claude Code hooks write per-session state files.")
 
-(defvar agents--states (make-hash-table :test 'equal)
+(defvar elmux--states (make-hash-table :test 'equal)
   "Map of session-id to plist (:state SYMBOL :since FLOAT).")
 
-(defvar-local agents--session-id nil
+(defvar-local elmux--session-id nil
   "Unique id of this vterm session, also its state file name.")
 
-(defun agents--parse-state (content)
+(defun elmux--parse-state (content)
   "Return state symbol from state-file CONTENT, or nil if unrecognized."
   (let ((s (string-trim (or content ""))))
     (when (member s '("working" "waiting" "done"))
       (intern s))))
 
-(defun agents--state-sort-key (state)
+(defun elmux--state-sort-key (state)
   (or (cl-position state '(waiting done working running exited)) 5))
 
-(defun agents--tool-name (buffer-name fallback)
+(defun elmux--tool-name (buffer-name fallback)
   "Derive a tool label from BUFFER-NAME (e.g. \"*claude:proj*<2>\" -> \"claude\").
 Use FALLBACK (typically the process name) for generic \"*vterm*\" buffers."
   (let ((base (and (string-match "\\`\\*\\([^:*]+\\)" buffer-name)
@@ -85,233 +85,233 @@ Use FALLBACK (typically the process name) for generic \"*vterm*\" buffers."
         (or fallback base "?")
       base)))
 
-(defun agents--format-since (seconds)
+(defun elmux--format-since (seconds)
   (cond ((null seconds) "—")
         ((< seconds 60) (format "%ds" (floor seconds)))
         ((< seconds 3600) (format "%dm" (floor seconds 60)))
         (t (format "%dh" (floor seconds 3600)))))
 
-(defun agents--badge-text (n)
+(defun elmux--badge-text (n)
   (when (> n 0) (format "●%d" n)))
 
-(defvar agents--session-counter 0)
-(defvar agents--watch nil)
-(defvar agents--poll-timer nil)
+(defvar elmux--session-counter 0)
+(defvar elmux--watch nil)
+(defvar elmux--poll-timer nil)
 
-(defun agents--new-session-id ()
+(defun elmux--new-session-id ()
   (format "%d-%d-%d" (emacs-pid) (floor (float-time))
-          (cl-incf agents--session-counter)))
+          (cl-incf elmux--session-counter)))
 
-(defun agents--vterm-buffers ()
+(defun elmux--vterm-buffers ()
   (cl-remove-if-not
    (lambda (b) (provided-mode-derived-p
                 (buffer-local-value 'major-mode b) 'vterm-mode))
    (buffer-list)))
 
-(defun agents--handle-state-file (file)
-  "Read state FILE into `agents--states'; return the new state symbol or nil."
+(defun elmux--handle-state-file (file)
+  "Read state FILE into `elmux--states'; return the new state symbol or nil."
   (let ((id (file-name-nondirectory file)))
     (when (file-exists-p file)
-      (let ((state (agents--parse-state
+      (let ((state (elmux--parse-state
                     (with-temp-buffer
                       (insert-file-contents file)
                       (buffer-string)))))
         (cond
-         ((null state) (remhash id agents--states) nil)
-         ((eq state (plist-get (gethash id agents--states) :state)) state)
-         (t (puthash id (list :state state :since (float-time)) agents--states)
+         ((null state) (remhash id elmux--states) nil)
+         ((eq state (plist-get (gethash id elmux--states) :state)) state)
+         (t (puthash id (list :state state :since (float-time)) elmux--states)
             state))))))
 
-(defun agents--sweep-stale-files ()
+(defun elmux--sweep-stale-files ()
   (let ((live (delq nil (mapcar (lambda (b)
-                                  (buffer-local-value 'agents--session-id b))
-                                (agents--vterm-buffers)))))
-    (dolist (f (directory-files agents-state-directory t "\\`[^.]"))
+                                  (buffer-local-value 'elmux--session-id b))
+                                (elmux--vterm-buffers)))))
+    (dolist (f (directory-files elmux-state-directory t "\\`[^.]"))
       (unless (member (file-name-nondirectory f) live)
         (ignore-errors (delete-file f))))))
 
-(defun agents--after-state-change ()
+(defun elmux--after-state-change ()
   "Refresh badge, sidebar, and dashboard after the state store changed."
-  (agents--update-badge)
-  (agents--sidebar-render)
-  (let ((buf (get-buffer "*agents*")))
+  (elmux--update-badge)
+  (elmux--sidebar-render)
+  (let ((buf (get-buffer "*elmux*")))
     (when (and buf (get-buffer-window buf t))
       (with-current-buffer buf (revert-buffer)))))
 
-(defvar agents--file-watches (make-hash-table :test 'equal)
+(defvar elmux--file-watches (make-hash-table :test 'equal)
   "Map of state-file path to its file-notify descriptor.
 kqueue only reports directory-entry changes for the directory watch, so
 each state file gets its own watch to catch content overwrites.")
 
-(defun agents--watch-state-file (file)
-  (when (and (not (gethash file agents--file-watches))
+(defun elmux--watch-state-file (file)
+  (when (and (not (gethash file elmux--file-watches))
              (file-exists-p file))
     (ignore-errors
       (puthash file
                (file-notify-add-watch file '(change)
-                                      #'agents--file-notify-callback)
-               agents--file-watches))))
+                                      #'elmux--file-notify-callback)
+               elmux--file-watches))))
 
-(defun agents--unwatch-state-file (file)
-  (when-let* ((desc (gethash file agents--file-watches)))
+(defun elmux--unwatch-state-file (file)
+  (when-let* ((desc (gethash file elmux--file-watches)))
     (ignore-errors (file-notify-rm-watch desc))
-    (remhash file agents--file-watches)))
+    (remhash file elmux--file-watches)))
 
-(defun agents--file-notify-callback (event)
+(defun elmux--file-notify-callback (event)
   (pcase-let ((`(,_desc ,action ,file . ,_) event))
     (pcase action
       ('changed
-       (agents--handle-state-file file)
-       (agents--after-state-change))
+       (elmux--handle-state-file file)
+       (elmux--after-state-change))
       ((or 'deleted 'renamed 'stopped)
-       (agents--unwatch-state-file file)))))
+       (elmux--unwatch-state-file file)))))
 
-(defun agents--notify-callback (event)
+(defun elmux--notify-callback (event)
   (pcase-let ((`(,_desc ,action ,file . ,_) event))
     (when (memq action '(created changed))
-      (agents--handle-state-file file)
-      (agents--watch-state-file file)
-      (agents--after-state-change))))
+      (elmux--handle-state-file file)
+      (elmux--watch-state-file file)
+      (elmux--after-state-change))))
 
-(defun agents--poll-state-directory ()
-  (dolist (f (directory-files agents-state-directory t "\\`[^.]"))
-    (agents--handle-state-file f))
-  (agents--after-state-change))
+(defun elmux--poll-state-directory ()
+  (dolist (f (directory-files elmux-state-directory t "\\`[^.]"))
+    (elmux--handle-state-file f))
+  (elmux--after-state-change))
 
-(defun agents--cleanup-killed-buffer ()
-  (when (and agents--session-id (derived-mode-p 'vterm-mode))
-    (let ((file (expand-file-name agents--session-id agents-state-directory)))
-      (agents--unwatch-state-file file)
+(defun elmux--cleanup-killed-buffer ()
+  (when (and elmux--session-id (derived-mode-p 'vterm-mode))
+    (let ((file (expand-file-name elmux--session-id elmux-state-directory)))
+      (elmux--unwatch-state-file file)
       (ignore-errors (delete-file file)))
-    (remhash agents--session-id agents--states)
-    (run-at-time 0 nil #'agents--after-state-change)))
+    (remhash elmux--session-id elmux--states)
+    (run-at-time 0 nil #'elmux--after-state-change)))
 
-(defun agents-setup ()
-  "Initialize the agents state directory, watcher, and hooks."
-  (when agents--watch
-    (ignore-errors (file-notify-rm-watch agents--watch))
-    (setq agents--watch nil))
+(defun elmux-setup ()
+  "Initialize the elmux state directory, watcher, and hooks."
+  (when elmux--watch
+    (ignore-errors (file-notify-rm-watch elmux--watch))
+    (setq elmux--watch nil))
   (maphash (lambda (_file desc) (ignore-errors (file-notify-rm-watch desc)))
-           agents--file-watches)
-  (clrhash agents--file-watches)
-  (make-directory agents-state-directory t)
-  (agents--sweep-stale-files)
-  (add-hook 'kill-buffer-hook #'agents--cleanup-killed-buffer)
-  (add-hook 'vterm-mode-hook #'agents--desktop-mark-buffer)
+           elmux--file-watches)
+  (clrhash elmux--file-watches)
+  (make-directory elmux-state-directory t)
+  (elmux--sweep-stale-files)
+  (add-hook 'kill-buffer-hook #'elmux--cleanup-killed-buffer)
+  (add-hook 'vterm-mode-hook #'elmux--desktop-mark-buffer)
   (add-to-list 'desktop-buffer-mode-handlers
-               (cons 'vterm-mode #'agents--desktop-restore-buffer))
-  (unless (memq 'agents--badge global-mode-string)
+               (cons 'vterm-mode #'elmux--desktop-restore-buffer))
+  (unless (memq 'elmux--badge global-mode-string)
     (setq global-mode-string
           (append (if (listp global-mode-string)
                       global-mode-string
                     (list global-mode-string))
-                  '(agents--badge))))
+                  '(elmux--badge))))
   (condition-case nil
       (progn
-        (setq agents--watch
-              (file-notify-add-watch agents-state-directory '(change)
-                                     #'agents--notify-callback))
-        (dolist (f (directory-files agents-state-directory t "\\`[^.]"))
-          (agents--watch-state-file f)))
+        (setq elmux--watch
+              (file-notify-add-watch elmux-state-directory '(change)
+                                     #'elmux--notify-callback))
+        (dolist (f (directory-files elmux-state-directory t "\\`[^.]"))
+          (elmux--watch-state-file f)))
     (error
-     (setq agents--poll-timer
-           (run-with-timer 3 3 #'agents--poll-state-directory))))
+     (setq elmux--poll-timer
+           (run-with-timer 3 3 #'elmux--poll-state-directory))))
   (setq tab-bar-show nil)
   (tab-bar-mode 1)
-  (agents--ensure-main-tab)
-  (add-to-list 'desktop-globals-to-save 'agents--workspaces)
-  (unless (memq 'agents--workspace-indicator global-mode-string)
+  (elmux--ensure-main-tab)
+  (add-to-list 'desktop-globals-to-save 'elmux--workspaces)
+  (unless (memq 'elmux--workspace-indicator global-mode-string)
     (setq global-mode-string
-          (append global-mode-string '(agents--workspace-indicator))))
+          (append global-mode-string '(elmux--workspace-indicator))))
   (if (boundp 'tab-bar-tab-post-select-functions)
-      (add-hook 'tab-bar-tab-post-select-functions #'agents--sidebar-sync)
-    (advice-add 'tab-bar-select-tab :after #'agents--sidebar-sync))
-  (agents--update-badge))
+      (add-hook 'tab-bar-tab-post-select-functions #'elmux--sidebar-sync)
+    (advice-add 'tab-bar-select-tab :after #'elmux--sidebar-sync))
+  (elmux--update-badge))
 
-(defun agents--buffer-state (buf)
+(defun elmux--buffer-state (buf)
   (with-current-buffer buf
     (if (not (process-live-p (get-buffer-process buf)))
         'exited
-      (or (and agents--session-id
-               (plist-get (gethash agents--session-id agents--states) :state))
+      (or (and elmux--session-id
+               (plist-get (gethash elmux--session-id elmux--states) :state))
           'running))))
 
-(defun agents--state-label (state)
+(defun elmux--state-label (state)
   (pcase state
     ('waiting (propertize (format "● %s" state) 'face 'warning))
     ('done (propertize (format "✓ %s" state) 'face 'success))
     ('working (format "▶ %s" state))
     (_ (format "  %s" state))))
 
-(defun agents--project-label (dir)
+(defun elmux--project-label (dir)
   (if-let* ((pr (ignore-errors (project-current nil dir))))
       (project-name pr)
     (abbreviate-file-name (directory-file-name dir))))
 
-(defun agents--entry (buf)
+(defun elmux--entry (buf)
   (with-current-buffer buf
-    (let* ((state (agents--buffer-state buf))
-           (info (and agents--session-id
-                      (gethash agents--session-id agents--states)))
+    (let* ((state (elmux--buffer-state buf))
+           (info (and elmux--session-id
+                      (gethash elmux--session-id elmux--states)))
            (since (plist-get info :since))
            (proc (get-buffer-process buf)))
       (list buf
             (vector
-             (agents--state-label state)
+             (elmux--state-label state)
              (if info "claude"
-               (agents--tool-name
+               (elmux--tool-name
                 (buffer-name)
                 (and proc (file-name-nondirectory
                            (car (process-command proc))))))
-             (agents--project-label default-directory)
+             (elmux--project-label default-directory)
              (buffer-name)
              (if (memq state '(waiting done exited))
-                 (agents--format-since (and since (- (float-time) since)))
+                 (elmux--format-since (and since (- (float-time) since)))
                "—"))))))
 
-(defun agents--dashboard-entries ()
-  (mapcar #'agents--entry
-          (sort (agents--vterm-buffers)
+(defun elmux--dashboard-entries ()
+  (mapcar #'elmux--entry
+          (sort (elmux--vterm-buffers)
                 (lambda (a b)
-                  (< (agents--state-sort-key (agents--buffer-state a))
-                     (agents--state-sort-key (agents--buffer-state b)))))))
+                  (< (elmux--state-sort-key (elmux--buffer-state a))
+                     (elmux--state-sort-key (elmux--buffer-state b)))))))
 
-(defun agents--vterm-mode-advice (orig-fun &rest args)
-  (let* ((id (agents--new-session-id))
+(defun elmux--vterm-mode-advice (orig-fun &rest args)
+  (let* ((id (elmux--new-session-id))
          (vterm-environment
-          (cons (concat "EMACS_AGENT_SESSION=" id)
+          (cons (concat "ELMUX_SESSION=" id)
                 (bound-and-true-p vterm-environment))))
     (apply orig-fun args)
-    (setq-local agents--session-id id)))
+    (setq-local elmux--session-id id)))
 
 (with-eval-after-load 'vterm
-  (advice-add 'vterm-mode :around #'agents--vterm-mode-advice))
+  (advice-add 'vterm-mode :around #'elmux--vterm-mode-advice))
 
-(defvar agents--refresh-timer nil)
+(defvar elmux--refresh-timer nil)
 
-(define-derived-mode agents-dashboard-mode tabulated-list-mode "Agents"
+(define-derived-mode elmux-dashboard-mode tabulated-list-mode "Elmux"
   "Overview of running vterm agent sessions."
   (setq tabulated-list-format
         [("STATE" 10 nil) ("TOOL" 8 t) ("PROJECT" 24 t)
          ("BUFFER" 28 t) ("SINCE" 6 nil)])
-  (setq tabulated-list-entries #'agents--dashboard-entries)
+  (setq tabulated-list-entries #'elmux--dashboard-entries)
   (tabulated-list-init-header))
 
-(defun agents--target-buffer ()
+(defun elmux--target-buffer ()
   (let ((buf (tabulated-list-get-id)))
     (unless (buffer-live-p buf)
       (user-error "No session on this line"))
     buf))
 
-(defun agents-open ()
+(defun elmux-open ()
   (interactive)
-  (pop-to-buffer-same-window (agents--target-buffer)))
+  (pop-to-buffer-same-window (elmux--target-buffer)))
 
-(defun agents-open-other-window ()
+(defun elmux-open-other-window ()
   (interactive)
-  (pop-to-buffer (agents--target-buffer)))
+  (pop-to-buffer (elmux--target-buffer)))
 
-(defun agents-new-session ()
+(defun elmux-new-session ()
   (interactive)
   (let ((starter (pcase (completing-read
                          "Tool: " '("claude" "codex" "aider" "fish") nil t)
@@ -323,68 +323,68 @@ each state file gets its own watch to catch content overwrites.")
         (call-interactively starter)
       (user-error "%s is not defined (is apps.el loaded?)" starter))))
 
-(defun agents-kill-session ()
+(defun elmux-kill-session ()
   (interactive)
-  (let ((buf (agents--target-buffer)))
+  (let ((buf (elmux--target-buffer)))
     (when (yes-or-no-p (format "Kill %s? " (buffer-name buf)))
       (let ((kill-buffer-query-functions nil))
         (kill-buffer buf))
       (revert-buffer))))
 
-(defun agents-rename-session ()
+(defun elmux-rename-session ()
   (interactive)
-  (let ((buf (agents--target-buffer)))
+  (let ((buf (elmux--target-buffer)))
     (with-current-buffer buf
       (rename-buffer (read-string "Rename to: " (buffer-name)) t)))
   (revert-buffer))
 
-(define-key agents-dashboard-mode-map (kbd "RET") #'agents-open)
-(define-key agents-dashboard-mode-map "o" #'agents-open-other-window)
-(define-key agents-dashboard-mode-map "n" #'agents-new-session)
-(define-key agents-dashboard-mode-map "x" #'agents-kill-session)
-(define-key agents-dashboard-mode-map "r" #'agents-rename-session)
+(define-key elmux-dashboard-mode-map (kbd "RET") #'elmux-open)
+(define-key elmux-dashboard-mode-map "o" #'elmux-open-other-window)
+(define-key elmux-dashboard-mode-map "n" #'elmux-new-session)
+(define-key elmux-dashboard-mode-map "x" #'elmux-kill-session)
+(define-key elmux-dashboard-mode-map "r" #'elmux-rename-session)
 
 (with-eval-after-load 'evil
-  (evil-set-initial-state 'agents-dashboard-mode 'normal)
-  (evil-define-key 'normal agents-dashboard-mode-map
-    (kbd "RET") #'agents-open
-    "o" #'agents-open-other-window
-    "n" #'agents-new-session
-    "x" #'agents-kill-session
-    "r" #'agents-rename-session
+  (evil-set-initial-state 'elmux-dashboard-mode 'normal)
+  (evil-define-key 'normal elmux-dashboard-mode-map
+    (kbd "RET") #'elmux-open
+    "o" #'elmux-open-other-window
+    "n" #'elmux-new-session
+    "x" #'elmux-kill-session
+    "r" #'elmux-rename-session
     "gr" #'revert-buffer
     "q" #'quit-window))
 
-(defun agents--refresh-tick ()
-  (let ((buf (get-buffer "*agents*")))
+(defun elmux--refresh-tick ()
+  (let ((buf (get-buffer "*elmux*")))
     (if (and buf (get-buffer-window buf t))
         (with-current-buffer buf (revert-buffer))
-      (when agents--refresh-timer
-        (cancel-timer agents--refresh-timer)
-        (setq agents--refresh-timer nil)))))
+      (when elmux--refresh-timer
+        (cancel-timer elmux--refresh-timer)
+        (setq elmux--refresh-timer nil)))))
 
-(defun agents-dashboard ()
+(defun elmux-dashboard ()
   "Show an overview of all running vterm sessions."
   (interactive)
-  (with-current-buffer (get-buffer-create "*agents*")
-    (unless (derived-mode-p 'agents-dashboard-mode)
-      (agents-dashboard-mode))
+  (with-current-buffer (get-buffer-create "*elmux*")
+    (unless (derived-mode-p 'elmux-dashboard-mode)
+      (elmux-dashboard-mode))
     (revert-buffer)
     (pop-to-buffer (current-buffer)))
-  (unless agents--refresh-timer
-    (setq agents--refresh-timer
-          (run-with-timer 5 5 #'agents--refresh-tick))))
+  (unless elmux--refresh-timer
+    (setq elmux--refresh-timer
+          (run-with-timer 5 5 #'elmux--refresh-tick))))
 
-(defvar agents--badge "")
-(put 'agents--badge 'risky-local-variable t)
+(defvar elmux--badge "")
+(put 'elmux--badge 'risky-local-variable t)
 
-(defun agents--waiting-buffers ()
-  (cl-remove-if-not (lambda (b) (eq (agents--buffer-state b) 'waiting))
-                    (agents--vterm-buffers)))
+(defun elmux--waiting-buffers ()
+  (cl-remove-if-not (lambda (b) (eq (elmux--buffer-state b) 'waiting))
+                    (elmux--vterm-buffers)))
 
-(defun agents--update-badge ()
-  (let ((text (agents--badge-text (length (agents--waiting-buffers)))))
-    (setq agents--badge
+(defun elmux--update-badge ()
+  (let ((text (elmux--badge-text (length (elmux--waiting-buffers)))))
+    (setq elmux--badge
           (if (null text) ""
             (concat " " (propertize
                          text
@@ -393,21 +393,21 @@ each state file gets its own watch to catch content overwrites.")
                          'help-echo "Agents waiting — mouse-1: jump"
                          'local-map (let ((m (make-sparse-keymap)))
                                       (define-key m [mode-line mouse-1]
-                                                  #'agents-jump-to-waiting)
+                                                  #'elmux-jump-to-waiting)
                                       m)))))
     (force-mode-line-update t)))
 
-(defun agents-jump-to-waiting ()
+(defun elmux-jump-to-waiting ()
   "Cycle through vterm sessions waiting for input."
   (interactive)
-  (let ((bufs (agents--waiting-buffers)))
+  (let ((bufs (elmux--waiting-buffers)))
     (if (null bufs)
         (message "No agents waiting")
       (let ((pos (cl-position (current-buffer) bufs)))
         (switch-to-buffer
          (nth (mod (1+ (or pos -1)) (length bufs)) bufs))))))
 
-(defconst agents--claude-hook-events
+(defconst elmux--claude-hook-events
   '(("UserPromptSubmit" "working")
     ("PostToolUse" "working")
     ("Notification" "waiting")
@@ -416,34 +416,39 @@ each state file gets its own watch to catch content overwrites.")
     ("Stop" "done"))
   "Hook specs as (EVENT STATE &optional MATCHER).")
 
-(defconst agents--codex-hook-events
+(defconst elmux--codex-hook-events
   '(("UserPromptSubmit" "working")
     ("PostToolUse" "working")
     ("PermissionRequest" "waiting")
     ("Stop" "done")))
 
-(defconst agents--claude-hook-command-format
-  (concat "[ -n \"$EMACS_AGENT_SESSION\" ] && "
-          "echo %s > \"$HOME/.cache/emacs-agents/$EMACS_AGENT_SESSION\" "
+(defconst elmux--claude-hook-command-format
+  (concat "[ -n \"$ELMUX_SESSION\" ] && "
+          "echo %s > \"$HOME/.cache/elmux/$ELMUX_SESSION\" "
           "|| true"))
 
-(defun agents--merged-hooks (json events)
-  "Return settings alist JSON with the agents hook EVENTS merged in.
-Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent."
+(defun elmux--hook-entry-matches-p (entry regexp)
+  (cl-some (lambda (h)
+             (string-match-p regexp (or (alist-get 'command h) "")))
+           (append (alist-get 'hooks entry) nil)))
+
+(defun elmux--merged-hooks (json events)
+  "Return settings alist JSON with the elmux hook EVENTS merged in.
+Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent;
+entries from the pre-rename emacs-agents layout are dropped."
   (let ((hooks (alist-get 'hooks json)))
     (dolist (spec events)
       (let* ((event (intern (nth 0 spec)))
-             (cmd (format agents--claude-hook-command-format (nth 1 spec)))
+             (cmd (format elmux--claude-hook-command-format (nth 1 spec)))
              (matcher (nth 2 spec))
-             (entries (alist-get event hooks))
-             (present
-              (cl-some
-               (lambda (entry)
-                 (cl-some (lambda (h)
-                            (string-match-p "emacs-agents"
-                                            (or (alist-get 'command h) "")))
-                          (append (alist-get 'hooks entry) nil)))
-               (append entries nil))))
+             (entries (cl-remove-if
+                       (lambda (entry)
+                         (elmux--hook-entry-matches-p entry "emacs-agents"))
+                       (append (alist-get event hooks) nil)))
+             (present (cl-some (lambda (entry)
+                                 (elmux--hook-entry-matches-p entry "\\.cache/elmux"))
+                               entries)))
+        (setf (alist-get event hooks) (vconcat entries))
         (unless present
           (setf (alist-get event hooks)
                 (vconcat entries
@@ -455,11 +460,11 @@ Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent."
     (setf (alist-get 'hooks json) hooks)
     json))
 
-(defun agents--merged-claude-hooks (json)
-  (agents--merged-hooks json agents--claude-hook-events))
+(defun elmux--merged-claude-hooks (json)
+  (elmux--merged-hooks json elmux--claude-hook-events))
 
-(defun agents--install-hooks (file events)
-  "Merge the agents hook EVENTS into the JSON hooks FILE, with confirmation."
+(defun elmux--install-hooks (file events)
+  "Merge the elmux hook EVENTS into the JSON hooks FILE, with confirmation."
   (let* ((json (when (file-exists-p file)
                  (with-temp-buffer
                    (insert-file-contents file)
@@ -468,10 +473,10 @@ Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent."
                                           :array-type 'array)
                      (error (user-error
                              "%s does not parse; merge hooks manually" file))))))
-         (merged (agents--merged-hooks (copy-tree json t) events)))
+         (merged (elmux--merged-hooks (copy-tree json t) events)))
     (if (equal json merged)
         (message "Claude hooks already installed")
-      (with-current-buffer (get-buffer-create "*agents-claude-hooks*")
+      (with-current-buffer (get-buffer-create "*elmux-claude-hooks*")
         (erase-buffer)
         (insert (json-serialize merged))
         (json-pretty-print-buffer)
@@ -486,111 +491,111 @@ Arrays are vectors, as produced by `json-parse-buffer'.  Idempotent."
         (message "Hooks installed into %s; restart running sessions to apply"
                  file)))))
 
-(defun agents-install-claude-hooks ()
-  "Merge the agents state hooks into ~/.claude/settings.json, with confirmation."
+(defun elmux-install-claude-hooks ()
+  "Merge the elmux state hooks into ~/.claude/settings.json, with confirmation."
   (interactive)
-  (agents--install-hooks (expand-file-name "~/.claude/settings.json")
-                         agents--claude-hook-events))
+  (elmux--install-hooks (expand-file-name "~/.claude/settings.json")
+                         elmux--claude-hook-events))
 
-(defun agents-install-codex-hooks ()
-  "Merge the agents state hooks into ~/.codex/hooks.json, with confirmation.
+(defun elmux-install-codex-hooks ()
+  "Merge the elmux state hooks into ~/.codex/hooks.json, with confirmation.
 Codex requires trusting new hooks: it will ask on its next interactive
 run (its state icon reports via PermissionRequest instead of
 Notification, otherwise identically to claude)."
   (interactive)
-  (agents--install-hooks (expand-file-name "~/.codex/hooks.json")
-                         agents--codex-hook-events))
+  (elmux--install-hooks (expand-file-name "~/.codex/hooks.json")
+                         elmux--codex-hook-events))
 
 (require 'tab-bar)
 
-(defvar agents-workspace-main-name "main")
-(defvar agents-sidebar-width 28)
-(defvar agents--sidebar-visible nil)
+(defvar elmux-workspace-main-name "main")
+(defvar elmux-sidebar-width 28)
+(defvar elmux--sidebar-visible nil)
 
-(defvar agents--workspace-indicator "")
-(put 'agents--workspace-indicator 'risky-local-variable t)
+(defvar elmux--workspace-indicator "")
+(put 'elmux--workspace-indicator 'risky-local-variable t)
 
-(defvar agents--workspaces nil
+(defvar elmux--workspaces nil
   "Alist of workspace NAME to root DIRECTORY, in creation order.")
 
-(defun agents--workspace-tab-name (name)
+(defun elmux--workspace-tab-name (name)
   (concat "ws:" name))
 
-(defun agents--workspace-name (tab-name)
+(defun elmux--workspace-name (tab-name)
   (and (string-prefix-p "ws:" tab-name)
        (substring tab-name (length "ws:"))))
 
-(defun agents--plain-tab-p (tab-name)
-  (not (or (agents--workspace-name tab-name)
+(defun elmux--plain-tab-p (tab-name)
+  (not (or (elmux--workspace-name tab-name)
            (string-prefix-p "agent:" tab-name))))
 
-(defun agents--tab-names ()
+(defun elmux--tab-names ()
   (mapcar (lambda (tab) (alist-get 'name tab))
           (funcall tab-bar-tabs-function)))
 
-(defun agents--workspace-root (name)
-  (alist-get name agents--workspaces nil nil #'equal))
+(defun elmux--workspace-root (name)
+  (alist-get name elmux--workspaces nil nil #'equal))
 
-(defun agents--workspace-state (root)
+(defun elmux--workspace-state (root)
   "Most urgent hook state among sessions rooted under ROOT, or nil."
   (let* ((root (file-name-as-directory (expand-file-name root)))
          (states
           (delq nil
                 (mapcar
                  (lambda (b)
-                   (let ((state (agents--buffer-state b))
+                   (let ((state (elmux--buffer-state b))
                          (dir (expand-file-name
                                (buffer-local-value 'default-directory b))))
                      (and (string-prefix-p root (file-name-as-directory dir))
                           (memq state '(waiting done working))
                           state)))
-                 (agents--vterm-buffers)))))
-    (car (sort states (lambda (a b) (< (agents--state-sort-key a)
-                                       (agents--state-sort-key b)))))))
+                 (elmux--vterm-buffers)))))
+    (car (sort states (lambda (a b) (< (elmux--state-sort-key a)
+                                       (elmux--state-sort-key b)))))))
 
-(defun agents--ensure-main-tab ()
+(defun elmux--ensure-main-tab ()
   "Name the first auto-named plain tab main, unless a main tab exists."
   (when (bound-and-true-p tab-bar-mode)
     (let ((tabs (funcall tab-bar-tabs-function)))
-      (unless (member agents-workspace-main-name
+      (unless (member elmux-workspace-main-name
                       (mapcar (lambda (tab) (alist-get 'name tab)) tabs))
         (when-let* ((tab (cl-find-if
                           (lambda (tab)
-                            (and (agents--plain-tab-p (alist-get 'name tab))
+                            (and (elmux--plain-tab-p (alist-get 'name tab))
                                  (not (alist-get 'explicit-name tab))))
                           tabs)))
           (tab-bar-rename-tab-by-name (alist-get 'name tab)
-                                      agents-workspace-main-name))))))
+                                      elmux-workspace-main-name))))))
 
-(defun agents--ensure-tab-bar ()
+(defun elmux--ensure-tab-bar ()
   (unless tab-bar-mode
     (setq tab-bar-show nil)
     (tab-bar-mode 1))
-  (agents--ensure-main-tab))
+  (elmux--ensure-main-tab))
 
-(defun agents--update-workspace-indicator ()
+(defun elmux--update-workspace-indicator ()
   (let* ((name (and (bound-and-true-p tab-bar-mode)
                     (alist-get 'name (tab-bar--current-tab))))
-         (label (and name (agents--workspace-name name))))
-    (setq agents--workspace-indicator (if label (format " [%s]" label) ""))
+         (label (and name (elmux--workspace-name name))))
+    (setq elmux--workspace-indicator (if label (format " [%s]" label) ""))
     (force-mode-line-update t)))
 
-(defun agents--workspace-goto (name)
+(defun elmux--workspace-goto (name)
   "Switch to workspace NAME, creating its tab (landing in dired) if needed."
-  (agents--ensure-tab-bar)
-  (let ((tab-name (agents--workspace-tab-name name)))
-    (if (member tab-name (agents--tab-names))
+  (elmux--ensure-tab-bar)
+  (let ((tab-name (elmux--workspace-tab-name name)))
+    (if (member tab-name (elmux--tab-names))
         (tab-bar-switch-to-tab tab-name)
       (tab-bar-new-tab)
       (tab-bar-rename-tab tab-name)
       (delete-other-windows)
-      (dired (or (agents--workspace-root name) default-directory))))
-  (agents--sidebar-sync))
+      (dired (or (elmux--workspace-root name) default-directory))))
+  (elmux--sidebar-sync))
 
-(defun agents-workspace-create (name directory)
+(defun elmux-workspace-create (name directory)
   "Register workspace NAME rooted at DIRECTORY.
 It appears in the sidebar; switch to it from there or with
-`agents-workspace-switch'.  Callable from Lisp to build variant
+`elmux-workspace-switch'.  Callable from Lisp to build variant
 commands that compute DIRECTORY first (see Commentary)."
   (interactive
    (list (read-string "Workspace name: ")
@@ -600,51 +605,51 @@ commands that compute DIRECTORY first (see Commentary)."
               default-directory))))
   (when (string-empty-p name)
     (user-error "Workspace name cannot be empty"))
-  (when (assoc name agents--workspaces)
+  (when (assoc name elmux--workspaces)
     (user-error "Workspace %s already exists" name))
-  (setq agents--workspaces
-        (append agents--workspaces
+  (setq elmux--workspaces
+        (append elmux--workspaces
                 (list (cons name (file-name-as-directory
                                   (expand-file-name directory))))))
-  (agents--sidebar-sync)
+  (elmux--sidebar-sync)
   (message "Workspace %s created; switch to it from the sidebar" name)
   name)
 
-(defun agents-workspace-next ()
+(defun elmux-workspace-next ()
   (interactive)
-  (agents--ensure-tab-bar)
+  (elmux--ensure-tab-bar)
   (tab-bar-switch-to-next-tab)
-  (agents--sidebar-sync))
+  (elmux--sidebar-sync))
 
-(defun agents-workspace-prev ()
+(defun elmux-workspace-prev ()
   (interactive)
-  (agents--ensure-tab-bar)
+  (elmux--ensure-tab-bar)
   (tab-bar-switch-to-prev-tab)
-  (agents--sidebar-sync))
+  (elmux--sidebar-sync))
 
-(defun agents--current-workspace-name ()
+(defun elmux--current-workspace-name ()
   "Name of the active workspace: registered name, tab name, or main."
   (let ((tab (and (bound-and-true-p tab-bar-mode)
                   (alist-get 'name (tab-bar--current-tab)))))
-    (or (and tab (agents--workspace-name tab))
+    (or (and tab (elmux--workspace-name tab))
         tab
-        agents-workspace-main-name)))
+        elmux-workspace-main-name)))
 
-(defun agents--workspace-app-buffer-name (workspace app)
+(defun elmux--workspace-app-buffer-name (workspace app)
   (format "*%s:%s*" workspace app))
 
-(defun agents--workspace-app (app &optional command)
+(defun elmux--workspace-app (app &optional command)
   "Start or switch to the APP vterm of the active workspace.
 The buffer is named *WORKSPACE:APP*, so each workspace gets its own
 instance.  COMMAND, if given, is run in the new vterm.  Starts in the
 workspace root when the workspace is registered."
-  (let* ((workspace (agents--current-workspace-name))
-         (buffer-name (agents--workspace-app-buffer-name workspace app))
+  (let* ((workspace (elmux--current-workspace-name))
+         (buffer-name (elmux--workspace-app-buffer-name workspace app))
          (existing (get-buffer buffer-name)))
     (if existing
         (switch-to-buffer existing)
       (let ((default-directory
-             (or (agents--workspace-root workspace)
+             (or (elmux--workspace-root workspace)
                  (when-let* ((pr (project-current))) (project-root pr))
                  default-directory)))
         (with-current-buffer (vterm t)
@@ -655,48 +660,48 @@ workspace root when the workspace is registered."
           (when (fboundp 'vterm-app-mode)
             (vterm-app-mode 1)))))))
 
-(defun agents-workspace-claude ()
+(defun elmux-workspace-claude ()
   "Start or switch to the claude instance of the active workspace."
   (interactive)
-  (agents--workspace-app "claude" "claude"))
+  (elmux--workspace-app "claude" "claude"))
 
-(defun agents-workspace-vterm ()
+(defun elmux-workspace-vterm ()
   "Start or switch to the shell vterm of the active workspace."
   (interactive)
-  (agents--workspace-app "vterm"))
+  (elmux--workspace-app "vterm"))
 
-(defun agents-workspace-codex ()
+(defun elmux-workspace-codex ()
   "Start or switch to the codex instance of the active workspace."
   (interactive)
-  (agents--workspace-app "codex" "codex"))
+  (elmux--workspace-app "codex" "codex"))
 
-(defvar agents-workspace-restore-commands
+(defvar elmux-workspace-restore-commands
   '(("claude" . "claude --continue")
     ("codex" . "codex resume --last")
     ("vterm" . nil))
   "Command run when desktop restores a workspace app vterm, keyed by app.
 nil runs no command (plain shell); an unlisted app runs its own name.")
 
-(defvar agents-desktop-relaunch-agents t
+(defvar elmux-desktop-relaunch-agents t
   "When non-nil, desktop restore reruns each app's restore command.
 When nil, restored app vterms are plain shells in the workspace root.")
 
-(defun agents--parse-app-buffer-name (name)
+(defun elmux--parse-app-buffer-name (name)
   "Return (WORKSPACE . APP) for a *WORKSPACE:APP* buffer NAME, else nil."
   (when (string-match "\\`\\*\\([^:*]+\\):\\([^:*]+\\)\\*\\'" name)
     (cons (match-string 1 name) (match-string 2 name))))
 
-(defun agents--restore-app (workspace app root)
+(defun elmux--restore-app (workspace app root)
   "Recreate the *WORKSPACE:APP* vterm in ROOT unless it exists; return it."
-  (let ((buffer-name (agents--workspace-app-buffer-name workspace app)))
+  (let ((buffer-name (elmux--workspace-app-buffer-name workspace app)))
     (or (get-buffer buffer-name)
         (let ((default-directory root))
           (save-window-excursion
             (with-current-buffer (vterm t)
               (when-let* ((command
-                           (and agents-desktop-relaunch-agents
-                                (if (assoc app agents-workspace-restore-commands)
-                                    (cdr (assoc app agents-workspace-restore-commands))
+                           (and elmux-desktop-relaunch-agents
+                                (if (assoc app elmux-workspace-restore-commands)
+                                    (cdr (assoc app elmux-workspace-restore-commands))
                                   app))))
                 (vterm-send-string command)
                 (vterm-send-return))
@@ -705,70 +710,70 @@ When nil, restored app vterms are plain shells in the workspace root.")
                 (vterm-app-mode 1))
               (current-buffer)))))))
 
-(defun agents--desktop-save-buffer (_desktop-dirname)
+(defun elmux--desktop-save-buffer (_desktop-dirname)
   "Desktop data for a workspace app vterm: (WORKSPACE APP ROOT), else nil."
-  (when-let* ((parsed (agents--parse-app-buffer-name (buffer-name))))
+  (when-let* ((parsed (elmux--parse-app-buffer-name (buffer-name))))
     (list (car parsed) (cdr parsed) default-directory)))
 
-(defun agents--desktop-mark-buffer ()
-  (setq-local desktop-save-buffer #'agents--desktop-save-buffer))
+(defun elmux--desktop-mark-buffer ()
+  (setq-local desktop-save-buffer #'elmux--desktop-save-buffer))
 
-(defun agents--desktop-restore-buffer (_file-name _buffer-name misc)
+(defun elmux--desktop-restore-buffer (_file-name _buffer-name misc)
   "Desktop handler for vterm buffers: recreate workspace apps from MISC."
   (pcase misc
     (`(,workspace ,app ,root)
      (when (and (stringp workspace) (stringp app) (stringp root)
                 (file-directory-p root))
-       (agents--restore-app workspace app root)))))
+       (elmux--restore-app workspace app root)))))
 
-(defun agents-workspace-switch ()
+(defun elmux-workspace-switch ()
   "Pick a workspace: plain tabs (main etc.) or a registered workspace."
   (interactive)
-  (agents--ensure-tab-bar)
-  (let* ((plain (cl-remove-if-not #'agents--plain-tab-p (agents--tab-names)))
-         (candidates (append plain (mapcar #'car agents--workspaces)))
+  (elmux--ensure-tab-bar)
+  (let* ((plain (cl-remove-if-not #'elmux--plain-tab-p (elmux--tab-names)))
+         (candidates (append plain (mapcar #'car elmux--workspaces)))
          (choice (completing-read "Workspace: " candidates nil t)))
-    (if (assoc choice agents--workspaces)
-        (agents--workspace-goto choice)
+    (if (assoc choice elmux--workspaces)
+        (elmux--workspace-goto choice)
       (tab-bar-switch-to-tab choice)
-      (agents--sidebar-sync))))
+      (elmux--sidebar-sync))))
 
 ;; Sidebar
 
-(define-derived-mode agents-sidebar-mode special-mode "AgentsSide"
+(define-derived-mode elmux-sidebar-mode special-mode "ElmuxSide"
   "Sidebar listing agent workspaces."
   (setq truncate-lines t)
   (setq cursor-in-non-selected-windows nil))
 
-(defun agents--sidebar-rows ()
+(defun elmux--sidebar-rows ()
   "Return (LABEL STATE TARGET) rows: plain tabs first, then workspaces."
-  (let* ((tabs (and (bound-and-true-p tab-bar-mode) (agents--tab-names)))
-         (plain (or (cl-remove-if-not #'agents--plain-tab-p tabs)
-                    (list agents-workspace-main-name))))
+  (let* ((tabs (and (bound-and-true-p tab-bar-mode) (elmux--tab-names)))
+         (plain (or (cl-remove-if-not #'elmux--plain-tab-p tabs)
+                    (list elmux-workspace-main-name))))
     (append
      (mapcar (lambda (name) (list name nil (cons 'tab name))) plain)
      (mapcar (lambda (ws)
-               (list (car ws) (agents--workspace-state (cdr ws))
+               (list (car ws) (elmux--workspace-state (cdr ws))
                      (cons 'ws (car ws))))
-             agents--workspaces))))
+             elmux--workspaces))))
 
-(defvar-local agents--sidebar-marks nil
-  "Marked sidebar targets, in the same form as the agents-target property.")
+(defvar-local elmux--sidebar-marks nil
+  "Marked sidebar targets, in the same form as the elmux-target property.")
 
-(defun agents--sidebar-goto-line (line)
+(defun elmux--sidebar-goto-line (line)
   (goto-char (point-min))
   (forward-line (1- line)))
 
-(defun agents--sidebar-render ()
-  (when-let* ((buf (get-buffer "*agents-sidebar*")))
+(defun elmux--sidebar-render ()
+  (when-let* ((buf (get-buffer "*elmux-sidebar*")))
     (with-current-buffer buf
-      (setq agents--sidebar-marks
+      (setq elmux--sidebar-marks
             (cl-remove-if (lambda (target)
                             (pcase target
                               (`(ws . ,name)
-                               (not (assoc name agents--workspaces)))
+                               (not (assoc name elmux--workspaces)))
                               (_ nil)))
-                          agents--sidebar-marks))
+                          elmux--sidebar-marks))
       (let* ((inhibit-read-only t)
              (line (line-number-at-pos))
              (window-lines
@@ -779,14 +784,14 @@ When nil, restored app vterms are plain shells in the workspace root.")
                            (alist-get 'name (tab-bar--current-tab)))))
         (erase-buffer)
         (insert (propertize "workspaces\n" 'face 'mode-line-emphasis))
-        (dolist (row (agents--sidebar-rows))
+        (dolist (row (elmux--sidebar-rows))
           (pcase-let ((`(,label ,state ,target) row))
             (let* ((currentp (pcase target
                                (`(tab . ,name) (equal name current))
                                (`(ws . ,name)
-                                (equal (agents--workspace-tab-name name)
+                                (equal (elmux--workspace-tab-name name)
                                        current))))
-                   (markedp (member target agents--sidebar-marks))
+                   (markedp (member target elmux--sidebar-marks))
                    (icon (pcase state
                            ('waiting (propertize "●" 'face 'warning))
                            ('done (propertize "✓" 'face 'success))
@@ -799,149 +804,149 @@ When nil, restored app vterms are plain shells in the workspace root.")
                                    (propertize "*" 'face 'warning)
                                  " ")
                                (if currentp ">" " ") icon label)
-                       'agents-target target
+                       'elmux-target target
                        'face (and currentp 'highlight)
                        'mouse-face 'highlight)))))
-        (agents--sidebar-goto-line line)
+        (elmux--sidebar-goto-line line)
         (dolist (wl window-lines)
           (set-window-point (car wl)
                             (save-excursion
-                              (agents--sidebar-goto-line (cdr wl))
+                              (elmux--sidebar-goto-line (cdr wl))
                               (point))))))))
 
-(defun agents--sidebar-show ()
-  (let ((buf (get-buffer-create "*agents-sidebar*")))
+(defun elmux--sidebar-show ()
+  (let ((buf (get-buffer-create "*elmux-sidebar*")))
     (with-current-buffer buf
-      (unless (derived-mode-p 'agents-sidebar-mode)
-        (agents-sidebar-mode)))
+      (unless (derived-mode-p 'elmux-sidebar-mode)
+        (elmux-sidebar-mode)))
     (display-buffer-in-side-window
      buf `((side . left) (slot . 0)
-           (window-width . ,agents-sidebar-width)
+           (window-width . ,elmux-sidebar-width)
            (window-parameters . ((no-delete-other-windows . t)))))
-    (agents--sidebar-render)))
+    (elmux--sidebar-render)))
 
-(defun agents--sidebar-sync (&rest _)
-  (agents--ensure-main-tab)
-  (agents--update-workspace-indicator)
-  (if agents--sidebar-visible
-      (agents--sidebar-show)
-    (when-let* ((win (get-buffer-window "*agents-sidebar*")))
+(defun elmux--sidebar-sync (&rest _)
+  (elmux--ensure-main-tab)
+  (elmux--update-workspace-indicator)
+  (if elmux--sidebar-visible
+      (elmux--sidebar-show)
+    (when-let* ((win (get-buffer-window "*elmux-sidebar*")))
       (delete-window win)))
-  (agents--sidebar-render))
+  (elmux--sidebar-render))
 
-(defun agents-sidebar-close ()
+(defun elmux-sidebar-close ()
   "Close the workspace sidebar."
   (interactive)
-  (setq agents--sidebar-visible nil)
-  (agents--sidebar-sync))
+  (setq elmux--sidebar-visible nil)
+  (elmux--sidebar-sync))
 
-(defun agents-sidebar-toggle ()
+(defun elmux-sidebar-toggle ()
   "Focus the sidebar, opening it if needed; close it when already focused."
   (interactive)
-  (let ((win (get-buffer-window "*agents-sidebar*")))
+  (let ((win (get-buffer-window "*elmux-sidebar*")))
     (cond
      ((and win (eq (selected-window) win))
-      (agents-sidebar-close))
+      (elmux-sidebar-close))
      (win (select-window win))
      (t
-      (setq agents--sidebar-visible t)
-      (agents--sidebar-sync)
-      (when-let* ((win (get-buffer-window "*agents-sidebar*")))
+      (setq elmux--sidebar-visible t)
+      (elmux--sidebar-sync)
+      (when-let* ((win (get-buffer-window "*elmux-sidebar*")))
         (select-window win))))))
 
-(defun agents--select-non-side-window ()
+(defun elmux--select-non-side-window ()
   (when-let* ((win (cl-find-if-not
                     (lambda (w) (window-parameter w 'window-side))
                     (window-list))))
     (select-window win)))
 
-(defun agents--sidebar-act ()
+(defun elmux--sidebar-act ()
   "Switch to the workspace on the current sidebar line; return non-nil if acted."
-  (when-let* ((target (get-text-property (point) 'agents-target)))
+  (when-let* ((target (get-text-property (point) 'elmux-target)))
     (pcase target
       (`(tab . ,name)
-       (agents--ensure-tab-bar)
+       (elmux--ensure-tab-bar)
        (unless (equal name (alist-get 'name (tab-bar--current-tab)))
          (tab-bar-switch-to-tab name))
-       (agents--sidebar-sync))
-      (`(ws . ,name) (agents--workspace-goto name)))
+       (elmux--sidebar-sync))
+      (`(ws . ,name) (elmux--workspace-goto name)))
     t))
 
-(defun agents-sidebar-select ()
+(defun elmux-sidebar-select ()
   "Switch to the workspace on the current sidebar line."
   (interactive)
-  (when (agents--sidebar-act)
-    (agents--select-non-side-window)))
+  (when (elmux--sidebar-act)
+    (elmux--select-non-side-window)))
 
-(defun agents-sidebar-open ()
+(defun elmux-sidebar-open ()
   "Open the workspace at point, keeping focus in the sidebar."
   (interactive)
   (let ((line (line-number-at-pos)))
-    (when (agents--sidebar-act)
-      (when-let* ((win (get-buffer-window "*agents-sidebar*")))
+    (when (elmux--sidebar-act)
+      (when-let* ((win (get-buffer-window "*elmux-sidebar*")))
         (select-window win)
         (goto-char (point-min))
         (forward-line (1- line))))))
 
-(defun agents-sidebar-mouse-select (event)
+(defun elmux-sidebar-mouse-select (event)
   (interactive "e")
   (mouse-set-point event)
-  (agents-sidebar-select))
+  (elmux-sidebar-select))
 
-(defun agents--sidebar-target-at-point ()
-  (get-text-property (point) 'agents-target))
+(defun elmux--sidebar-target-at-point ()
+  (get-text-property (point) 'elmux-target))
 
-(defun agents-sidebar-mark ()
+(defun elmux-sidebar-mark ()
   "Mark the workspace at point and move to the next line."
   (interactive)
-  (when-let* ((target (agents--sidebar-target-at-point)))
-    (cl-pushnew target agents--sidebar-marks :test #'equal)
-    (agents--sidebar-render))
+  (when-let* ((target (elmux--sidebar-target-at-point)))
+    (cl-pushnew target elmux--sidebar-marks :test #'equal)
+    (elmux--sidebar-render))
   (forward-line 1))
 
-(defun agents-sidebar-unmark ()
+(defun elmux-sidebar-unmark ()
   "Unmark the workspace at point and move to the next line."
   (interactive)
-  (when-let* ((target (agents--sidebar-target-at-point)))
-    (setq agents--sidebar-marks
-          (cl-remove target agents--sidebar-marks :test #'equal))
-    (agents--sidebar-render))
+  (when-let* ((target (elmux--sidebar-target-at-point)))
+    (setq elmux--sidebar-marks
+          (cl-remove target elmux--sidebar-marks :test #'equal))
+    (elmux--sidebar-render))
   (forward-line 1))
 
-(defun agents-sidebar-unmark-all ()
+(defun elmux-sidebar-unmark-all ()
   "Remove all sidebar marks."
   (interactive)
-  (setq agents--sidebar-marks nil)
-  (agents--sidebar-render))
+  (setq elmux--sidebar-marks nil)
+  (elmux--sidebar-render))
 
-(defun agents-sidebar-rename ()
+(defun elmux-sidebar-rename ()
   "Rename the workspace at point."
   (interactive)
-  (pcase (agents--sidebar-target-at-point)
+  (pcase (elmux--sidebar-target-at-point)
     (`(ws . ,name)
      (let ((new (read-string (format "Rename %s to: " name) name)))
-       (when (assoc new agents--workspaces)
+       (when (assoc new elmux--workspaces)
          (user-error "Workspace %s already exists" new))
-       (setq agents--workspaces
+       (setq elmux--workspaces
              (mapcar (lambda (ws)
                        (if (equal (car ws) name) (cons new (cdr ws)) ws))
-                     agents--workspaces))
-       (when (member (agents--workspace-tab-name name) (agents--tab-names))
-         (tab-bar-rename-tab-by-name (agents--workspace-tab-name name)
-                                     (agents--workspace-tab-name new))))
-     (agents--sidebar-sync))
+                     elmux--workspaces))
+       (when (member (elmux--workspace-tab-name name) (elmux--tab-names))
+         (tab-bar-rename-tab-by-name (elmux--workspace-tab-name name)
+                                     (elmux--workspace-tab-name new))))
+     (elmux--sidebar-sync))
     (`(tab . ,name)
      (tab-bar-rename-tab-by-name
       name (read-string (format "Rename %s to: " name) name))
-     (agents--sidebar-sync))
+     (elmux--sidebar-sync))
     (_ (user-error "No workspace on this line"))))
 
-(defun agents-sidebar-delete ()
+(defun elmux-sidebar-delete ()
   "Delete marked workspaces, or the one at point when none are marked.
 Session workspaces are killed; plain tabs are closed."
   (interactive)
-  (let* ((targets (or agents--sidebar-marks
-                      (when-let* ((target (agents--sidebar-target-at-point)))
+  (let* ((targets (or elmux--sidebar-marks
+                      (when-let* ((target (elmux--sidebar-target-at-point)))
                         (list target))))
          (labels (mapcar (lambda (target)
                            (pcase target
@@ -956,69 +961,69 @@ Session workspaces are killed; plain tabs are closed."
       (dolist (target targets)
         (pcase target
           (`(ws . ,name)
-           (setq agents--workspaces (assoc-delete-all name agents--workspaces))
-           (let ((tab-name (agents--workspace-tab-name name))
-                 (names (agents--tab-names)))
+           (setq elmux--workspaces (assoc-delete-all name elmux--workspaces))
+           (let ((tab-name (elmux--workspace-tab-name name))
+                 (names (elmux--tab-names)))
              (when (and (member tab-name names) (> (length names) 1))
                (ignore-errors (tab-bar-close-tab-by-name tab-name)))))
           (`(tab . ,name)
-           (let ((names (agents--tab-names)))
+           (let ((names (elmux--tab-names)))
              (when (and (member name names) (> (length names) 1))
                (ignore-errors (tab-bar-close-tab-by-name name)))))))
-      (setq agents--sidebar-marks nil)
-      (agents--sidebar-sync))))
+      (setq elmux--sidebar-marks nil)
+      (elmux--sidebar-sync))))
 
-(define-key agents-sidebar-mode-map (kbd "RET") #'agents-sidebar-select)
-(define-key agents-sidebar-mode-map [mouse-1] #'agents-sidebar-mouse-select)
-(define-key agents-sidebar-mode-map "o" #'agents-sidebar-open)
-(define-key agents-sidebar-mode-map "q" #'agents-sidebar-close)
-(define-key agents-sidebar-mode-map "R" #'agents-sidebar-rename)
-(define-key agents-sidebar-mode-map "m" #'agents-sidebar-mark)
-(define-key agents-sidebar-mode-map "u" #'agents-sidebar-unmark)
-(define-key agents-sidebar-mode-map "U" #'agents-sidebar-unmark-all)
-(defun agents--sidebar-visit-app (app &optional command)
+(define-key elmux-sidebar-mode-map (kbd "RET") #'elmux-sidebar-select)
+(define-key elmux-sidebar-mode-map [mouse-1] #'elmux-sidebar-mouse-select)
+(define-key elmux-sidebar-mode-map "o" #'elmux-sidebar-open)
+(define-key elmux-sidebar-mode-map "q" #'elmux-sidebar-close)
+(define-key elmux-sidebar-mode-map "R" #'elmux-sidebar-rename)
+(define-key elmux-sidebar-mode-map "m" #'elmux-sidebar-mark)
+(define-key elmux-sidebar-mode-map "u" #'elmux-sidebar-unmark)
+(define-key elmux-sidebar-mode-map "U" #'elmux-sidebar-unmark-all)
+(defun elmux--sidebar-visit-app (app &optional command)
   "Open the workspace at point (if any) and its APP vterm."
-  (agents--sidebar-act)
-  (agents--select-non-side-window)
-  (agents--workspace-app app command))
+  (elmux--sidebar-act)
+  (elmux--select-non-side-window)
+  (elmux--workspace-app app command))
 
-(defun agents-sidebar-claude ()
+(defun elmux-sidebar-claude ()
   "Open the claude instance of the workspace at point."
   (interactive)
-  (agents--sidebar-visit-app "claude" "claude"))
+  (elmux--sidebar-visit-app "claude" "claude"))
 
-(defun agents-sidebar-codex ()
+(defun elmux-sidebar-codex ()
   "Open the codex instance of the workspace at point."
   (interactive)
-  (agents--sidebar-visit-app "codex" "codex"))
+  (elmux--sidebar-visit-app "codex" "codex"))
 
-(defun agents-sidebar-vterm ()
+(defun elmux-sidebar-vterm ()
   "Open the shell vterm of the workspace at point."
   (interactive)
-  (agents--sidebar-visit-app "vterm"))
+  (elmux--sidebar-visit-app "vterm"))
 
-(define-key agents-sidebar-mode-map "D" #'agents-sidebar-delete)
-(define-key agents-sidebar-mode-map "N" #'agents-workspace-create)
-(define-key agents-sidebar-mode-map (kbd "a c") #'agents-sidebar-claude)
-(define-key agents-sidebar-mode-map (kbd "a x") #'agents-sidebar-codex)
-(define-key agents-sidebar-mode-map (kbd "a t") #'agents-sidebar-vterm)
+(define-key elmux-sidebar-mode-map "D" #'elmux-sidebar-delete)
+(define-key elmux-sidebar-mode-map "N" #'elmux-workspace-create)
+(define-key elmux-sidebar-mode-map (kbd "a c") #'elmux-sidebar-claude)
+(define-key elmux-sidebar-mode-map (kbd "a x") #'elmux-sidebar-codex)
+(define-key elmux-sidebar-mode-map (kbd "a t") #'elmux-sidebar-vterm)
 (with-eval-after-load 'evil
-  (evil-set-initial-state 'agents-sidebar-mode 'normal)
-  (evil-define-key 'normal agents-sidebar-mode-map
-    (kbd "RET") #'agents-sidebar-select
-    "o" #'agents-sidebar-open
-    "q" #'agents-sidebar-close
-    "R" #'agents-sidebar-rename
-    "m" #'agents-sidebar-mark
-    "u" #'agents-sidebar-unmark
-    "U" #'agents-sidebar-unmark-all
-    "D" #'agents-sidebar-delete
-    "N" #'agents-workspace-create
-    (kbd "a c") #'agents-sidebar-claude
-    (kbd "a x") #'agents-sidebar-codex
-    (kbd "a t") #'agents-sidebar-vterm))
+  (evil-set-initial-state 'elmux-sidebar-mode 'normal)
+  (evil-define-key 'normal elmux-sidebar-mode-map
+    (kbd "RET") #'elmux-sidebar-select
+    "o" #'elmux-sidebar-open
+    "q" #'elmux-sidebar-close
+    "R" #'elmux-sidebar-rename
+    "m" #'elmux-sidebar-mark
+    "u" #'elmux-sidebar-unmark
+    "U" #'elmux-sidebar-unmark-all
+    "D" #'elmux-sidebar-delete
+    "N" #'elmux-workspace-create
+    (kbd "a c") #'elmux-sidebar-claude
+    (kbd "a x") #'elmux-sidebar-codex
+    (kbd "a t") #'elmux-sidebar-vterm))
 
-(unless noninteractive (agents-setup))
+(unless noninteractive (elmux-setup))
 
-(provide 'agents)
-;;; agents.el ends here
+(provide 'elmux)
+;;; elmux.el ends here

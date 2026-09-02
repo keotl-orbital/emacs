@@ -314,9 +314,10 @@ each state file gets its own watch to catch content overwrites.")
 (defun elmux-new-session ()
   (interactive)
   (let ((starter (pcase (completing-read
-                         "Tool: " '("claude" "codex" "aider" "fish") nil t)
+                         "Tool: " '("claude" "codex" "opencode" "aider" "fish") nil t)
                    ("claude" 'start-claude-vterm)
                    ("codex" 'start-codex-vterm)
+                   ("opencode" 'start-opencode-vterm)
                    ("aider" 'start-aider-vterm)
                    ("fish" 'start-vterm-default))))
     (if (fboundp starter)
@@ -506,6 +507,45 @@ Notification, otherwise identically to claude)."
   (elmux--install-hooks (expand-file-name "~/.codex/hooks.json")
                          elmux--codex-hook-events))
 
+(defvar elmux-opencode-plugin-source
+  (expand-file-name "elmux-opencode-plugin.js" user-emacs-directory)
+  "The elmux opencode status plugin shipped alongside elmux.el.")
+
+(defvar elmux-opencode-plugin-target
+  (expand-file-name "~/.config/opencode/plugins/elmux-status.js")
+  "Where the status plugin is installed; opencode auto-loads this directory.")
+
+(defun elmux-install-opencode-hooks ()
+  "Install the elmux status plugin into ~/.config/opencode/plugins/.
+Opencode has no JSON hooks file like claude and codex, so state is
+reported from a plugin.  Files in the plugins directory are auto-loaded
+at startup, so no opencode.jsonc entry is needed."
+  (interactive)
+  (unless (file-exists-p elmux-opencode-plugin-source)
+    (user-error "Plugin source missing: %s" elmux-opencode-plugin-source))
+  (let ((source (with-temp-buffer
+                  (insert-file-contents elmux-opencode-plugin-source)
+                  (buffer-string)))
+        (target elmux-opencode-plugin-target))
+    (if (and (file-exists-p target)
+             (string= source (with-temp-buffer
+                               (insert-file-contents target)
+                               (buffer-string))))
+        (message "Opencode plugin already installed")
+      (with-current-buffer (get-buffer-create "*elmux-opencode-plugin*")
+        (erase-buffer)
+        (insert source)
+        (when (fboundp 'js-mode) (js-mode))
+        (display-buffer (current-buffer)))
+      (when (yes-or-no-p (format "Write this to %s? " target))
+        (make-directory (file-name-directory target) t)
+        (when (file-exists-p target)
+          (copy-file target (concat target ".bak-"
+                                    (format-time-string "%Y%m%d%H%M%S"))))
+        (copy-file elmux-opencode-plugin-source target t)
+        (message "Plugin installed into %s; restart running sessions to apply"
+                 target)))))
+
 (require 'tab-bar)
 
 (defvar elmux-workspace-main-name "main")
@@ -675,9 +715,15 @@ workspace root when the workspace is registered."
   (interactive)
   (elmux--workspace-app "codex" "codex"))
 
+(defun elmux-workspace-opencode ()
+  "Start or switch to the opencode instance of the active workspace."
+  (interactive)
+  (elmux--workspace-app "opencode" "opencode"))
+
 (defvar elmux-workspace-restore-commands
   '(("claude" . "claude --continue")
     ("codex" . "codex resume --last")
+    ("opencode" . "opencode --continue")
     ("vterm" . nil))
   "Command run when desktop restores a workspace app vterm, keyed by app.
 nil runs no command (plain shell); an unlisted app runs its own name.")
@@ -997,6 +1043,11 @@ Session workspaces are killed; plain tabs are closed."
   (interactive)
   (elmux--sidebar-visit-app "codex" "codex"))
 
+(defun elmux-sidebar-opencode ()
+  "Open the opencode instance of the workspace at point."
+  (interactive)
+  (elmux--sidebar-visit-app "opencode" "opencode"))
+
 (defun elmux-sidebar-vterm ()
   "Open the shell vterm of the workspace at point."
   (interactive)
@@ -1006,6 +1057,7 @@ Session workspaces are killed; plain tabs are closed."
 (define-key elmux-sidebar-mode-map "N" #'elmux-workspace-create)
 (define-key elmux-sidebar-mode-map (kbd "a c") #'elmux-sidebar-claude)
 (define-key elmux-sidebar-mode-map (kbd "a x") #'elmux-sidebar-codex)
+(define-key elmux-sidebar-mode-map (kbd "a o") #'elmux-sidebar-opencode)
 (define-key elmux-sidebar-mode-map (kbd "a t") #'elmux-sidebar-vterm)
 (with-eval-after-load 'evil
   (evil-set-initial-state 'elmux-sidebar-mode 'normal)
@@ -1021,6 +1073,7 @@ Session workspaces are killed; plain tabs are closed."
     "N" #'elmux-workspace-create
     (kbd "a c") #'elmux-sidebar-claude
     (kbd "a x") #'elmux-sidebar-codex
+    (kbd "a o") #'elmux-sidebar-opencode
     (kbd "a t") #'elmux-sidebar-vterm))
 
 (unless noninteractive (elmux-setup))

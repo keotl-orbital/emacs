@@ -75,6 +75,21 @@ Starts in the project root directory if available."
   (interactive)
   (start-vterm-wrapper-app "aider"))
 
+(defun start-codex-vterm ()
+  "Start a new vterm instance with codex."
+  (interactive)
+  (start-vterm-wrapper-app "codex"))
+
+(defun start-opencode-vterm ()
+  "Start a new vterm instance with opencode."
+  (interactive)
+  (start-vterm-wrapper-app "opencode"))
+
+(defun start-vterm-default ()
+  "Start a new vterm instance with default profile."
+  (interactive)
+  (start-vterm-wrapper-app "fish"))
+
 (defun start-claude-vterm-other-window ()
   "Start a new vterm instance with claude in another window."
   (interactive)
@@ -90,3 +105,19 @@ Starts in the project root directory if available."
       (split-window-right))
   (other-window 1)
   (start-aider-vterm))
+
+(defun start-codex-vterm-other-window ()
+  "Start a new vterm instance with codex in another window."
+  (interactive)
+  (if (one-window-p)
+      (split-window-right))
+  (other-window 1)
+  (start-codex-vterm))
+
+(defun start-opencode-vterm-other-window ()
+  "Start a new vterm instance with opencode in another window."
+  (interactive)
+  (if (one-window-p)
+      (split-window-right))
+  (other-window 1)
+  (start-opencode-vterm))

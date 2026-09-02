@@ -1,11 +1,15 @@
 ;; Files
 (define-key evil-normal-state-map (kbd "SPC f") '("Files 🔍" . (keymap)))
 (define-key evil-normal-state-map (kbd "SPC f f") 'find-file)
-(define-key evil-normal-state-map (kbd "SPC f h") 'hexl-find-file)
 (define-key magit-mode-map (kbd "SPC f f") 'find-file)
 (define-key magit-mode-map (kbd "SPC f r") 'recentf)
 
 ;; Project
+(defun project-find-regexp-region (beg end)
+  "Search the project for the text selected between BEG and END."
+  (interactive "r")
+  (project-find-regexp (regexp-quote (buffer-substring-no-properties beg end))))
+
 (define-key evil-normal-state-map (kbd "SPC p f") 'project-find-file)
 (define-key evil-normal-state-map (kbd "SPC p d") 'project-find-dir)
 (define-key evil-normal-state-map (kbd "SPC p D") 'project-dired)
@@ -16,6 +20,7 @@
 (define-key evil-normal-state-map (kbd "SPC p !") 'project-shell-command)
 (define-key evil-normal-state-map (kbd "SPC p s") '("Search/Replace 🔍" . (keymap)))
 (define-key evil-normal-state-map (kbd "SPC p s g") 'project-find-regexp)
+(define-key evil-visual-state-map (kbd "SPC p s g") 'project-find-regexp-region)
 (define-key evil-normal-state-map (kbd "SPC p s r") 'project-query-replace-regexp)
 (define-key evil-normal-state-map (kbd "SPC p b") '("Project buffers 🪟" . (keymap)))
 (define-key evil-normal-state-map (kbd "SPC p b b") 'project-switch-to-buffer)
@@ -51,6 +56,7 @@
 (define-key evil-normal-state-map (kbd "SPC t c") 'global-subword-mode)
 (define-key evil-normal-state-map (kbd "SPC t f") 'flyspell-mode)
 (define-key evil-normal-state-map (kbd "SPC t w") 'toggle-trailing-whitespace)
+(define-key evil-normal-state-map (kbd "SPC t l") 'toggle-truncate-lines)
 (define-key evil-normal-state-map (kbd "SPC t s") '("Text Size 🅰" . (keymap)))
 (define-key evil-normal-state-map (kbd "SPC t s t") 'text-scale-decrease)
 (define-key evil-normal-state-map (kbd "SPC t s s") 'text-scale-increase)
@@ -94,16 +100,28 @@
 (define-key evil-normal-state-map (kbd "SPC a t") 'vterm)
 (define-key evil-normal-state-map (kbd "SPC a c") 'start-claude-vterm)
 (define-key evil-normal-state-map (kbd "SPC a C") 'start-claude-vterm-other-window)
-(define-key evil-normal-state-map (kbd "SPC a a") 'start-aider-vterm)
-(define-key evil-normal-state-map (kbd "SPC a A") 'start-aider-vterm-other-window)
 (define-key evil-normal-state-map (kbd "SPC a x") 'start-codex-vterm)
 (define-key evil-normal-state-map (kbd "SPC a X") 'start-codex-vterm-other-window)
+(define-key evil-normal-state-map (kbd "SPC a o") 'start-opencode-vterm)
+(define-key evil-normal-state-map (kbd "SPC a O") 'start-opencode-vterm-other-window)
+(define-key evil-normal-state-map (kbd "SPC a j") 'elmux-jump-to-waiting)
+(define-key evil-normal-state-map (kbd "SPC a a") '("Elmux" . (keymap)))
+(define-key evil-normal-state-map (kbd "SPC a a n") 'elmux-workspace-next)
+(define-key evil-normal-state-map (kbd "SPC a a p") 'elmux-workspace-prev)
+(define-key evil-normal-state-map (kbd "SPC a a w") 'elmux-workspace-switch)
+(define-key evil-normal-state-map (kbd "SPC a a s") 'elmux-sidebar-toggle)
+(define-key evil-normal-state-map (kbd "SPC a a N") 'elmux-workspace-create)
+(define-key evil-normal-state-map (kbd "SPC a a c") 'elmux-workspace-claude)
+(define-key evil-normal-state-map (kbd "SPC a a t") 'elmux-workspace-vterm)
+(define-key evil-normal-state-map (kbd "SPC a a x") 'elmux-workspace-codex)
+(define-key evil-normal-state-map (kbd "SPC a a o") 'elmux-workspace-opencode)
+(define-key evil-normal-state-map (kbd "SPC a a d") 'elmux-dashboard)
 (define-key evil-normal-state-map (kbd "SPC a d") 'dictionary-search)
 
 ;; Quit
 (define-key evil-normal-state-map (kbd "SPC q") '("Quit 🚪" . (keymap)))
 (define-key evil-normal-state-map (kbd "SPC q q") 'save-buffers-kill-terminal)
-(define-key evil-normal-state-map (kbd "SPC q c") 'reload-config)
+(define-key evil-normal-state-map (kbd "SPC q r") 'reload-config)
 
 ;; copy all keys in evil's "SPC" prefix to magit's "SPC"
 (dolist (map '(magit-mode-map

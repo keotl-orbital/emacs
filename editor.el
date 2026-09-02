@@ -16,10 +16,30 @@
   :config ;; tweak evil after loading it
   (evil-mode)
 
-  (define-key evil-normal-state-map (kbd "g à") 'flymake-goto-next-error)
+  (defun my/flymake-goto-next-error-by-severity ()
+    (interactive)
+    (let* ((diags (flymake-diagnostics))
+           (severities (mapcar (lambda (d) (flymake--severity (flymake-diagnostic-type d))) diags))
+           (max-sev (and severities (apply #'max severities)))
+           (error-sev (flymake--severity :error))
+           (warning-sev (flymake--severity :warning)))
+      (cond
+       ((null max-sev)
+        (message "No flymake diagnostics"))
+       ((>= max-sev error-sev)
+        (flymake-goto-next-error 1 '(:error) t))
+       ((>= max-sev warning-sev)
+        (flymake-goto-next-error 1 '(:warning) t))
+       (t
+        (flymake-goto-next-error 1 nil t)))))
+
+  (define-key evil-normal-state-map (kbd "g à") 'my/flymake-goto-next-error-by-severity)
   (define-key evil-normal-state-map (kbd "g À") 'flymake-goto-prev-error)
   (define-key evil-normal-state-map (kbd "g D") 'xref-find-definitions-other-window)
   (define-key evil-normal-state-map (kbd "TAB") 'indent-for-tab-command)
+  ;; org-mode-map exception: TAB must keep cycling folds
+  (with-eval-after-load 'org
+    (evil-define-key 'normal org-mode-map (kbd "TAB") #'org-cycle))
   (define-key evil-normal-state-map (kbd "z z") 'recenter-top-bottom)
 
   ;;   :bind
@@ -67,9 +87,21 @@
     ;; (evil-set-initial-state 'ivy-occur-grep-mode 'normal)
     ;; (evil-set-initial-state 'ivy-minibuffer 'normal)
 
-    ;; Set to evil-normal-state in the minibuffer if we are finding a file only.
-    ;; (add-to-list 'minibuffer-setup-hook (lambda () (if (string-match-p "find-file" (format "%s" this-command)) (evil-normal-state))))
-    (add-to-list 'minibuffer-setup-hook 'evil-normal-state)
+    ;; Evil only sets the minibuffer default state via a buffer-local variable
+    ;; that is killed when the minibuffer buffer is reused, so reused
+    ;; minibuffers fall back to normal state. Register a proper initial state.
+    (evil-set-initial-state 'minibuffer-mode 'insert)
+
+    ;; Ivy installs its keymap as a composed local map, which evil cannot see,
+    ;; so evil's insert-state [remap delete-backward-char] shadows
+    ;; ivy-backward-delete-char and backspace dies on the read-only prompt.
+    ;; Copy the local map's remap into evil's buffer-local insert map instead.
+    (defun my/evil-minibuffer-restore-local-remaps ()
+      (when (bound-and-true-p evil-local-mode)
+        (let ((cmd (lookup-key (current-local-map) [remap delete-backward-char])))
+          (when (commandp cmd)
+            (evil-local-set-key 'insert [remap delete-backward-char] cmd)))))
+    (add-hook 'minibuffer-setup-hook #'my/evil-minibuffer-restore-local-remaps 90)
     
   )
   )
@@ -155,4 +187,7 @@
 
 ;; move M-c to M-n to prevent swaywm keybinding conflict
 (define-key global-map (kbd "M-n") 'capitalize-word)
+
+;; mouse support in terminal (emacs -nw)
+(xterm-mouse-mode 1)
 

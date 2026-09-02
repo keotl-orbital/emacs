@@ -22,6 +22,12 @@
     )
   )
 
+(defun reload-config ()
+  "Reload the Emacs configuration."
+  (interactive)
+  (load-file user-init-file)
+  (message "Reloaded %s" user-init-file))
+
 (defun get-string-from-file (filePath)
   "Return filePath's file content."
   (with-temp-buffer

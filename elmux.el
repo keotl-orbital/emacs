@@ -45,6 +45,24 @@
 ;; `elmux-workspace-restore-commands' (claude resumes via --continue;
 ;; set `elmux-desktop-relaunch-agents' to nil for dormant shells).
 ;; desktop-save-mode must be enabled for any of this to happen.
+;;
+;; Inside a workspace, a horizontal `tab-line' strip lists the buffers
+;; that belong to it: its *WORKSPACE:APP* vterms plus the files and
+;; direds under its root.  Buffers are classified once, when they are
+;; registered (on `find-file-hook', `dired-mode-hook', `vterm-mode-hook'
+;; and at the two app-creation sites), and the owning workspace is cached
+;; in `elmux--tab-workspace' -- so the tabs function that runs during
+;; redisplay only reads cached state and never touches the filesystem.
+;; Buffers outside every workspace get no tab line at all, since a
+;; `tab-line-format' that merely evaluates to nil still costs a screen
+;; line.  Cycle with `tab-line-switch-to-next-tab' / `-prev-tab'.
+;;
+;; Tab order is first-seen, new tabs appended.  It is keyed on buffer
+;; objects rather than names, because names are not stable identities:
+;; uniquify renames a buffer when a same-named file is opened elsewhere
+;; and renames it back when that one is killed.  The printable projection
+;; in `elmux--tab-order-names' rides in `desktop-globals-to-save' and is
+;; rebuilt, filtered and truncated at `desktop-save-hook'.
 
 ;;; Code:
 
@@ -55,6 +73,7 @@
 (require 'json)
 (require 'project)
 (require 'desktop)
+(require 'dired)
 
 (defvar vterm-environment)
 
@@ -220,6 +239,13 @@ each state file gets its own watch to catch content overwrites.")
   (tab-bar-mode 1)
   (elmux--ensure-main-tab)
   (add-to-list 'desktop-globals-to-save 'elmux--workspaces)
+  (add-to-list 'desktop-globals-to-save 'elmux--tab-order-names)
+  (add-hook 'desktop-save-hook #'elmux--tab-order-snapshot)
+  (add-hook 'desktop-after-read-hook #'elmux--tab-order-restore)
+  (add-hook 'find-file-hook #'elmux--tab-line-register)
+  (add-hook 'dired-mode-hook #'elmux--tab-line-register)
+  (add-hook 'vterm-mode-hook #'elmux--tab-line-register)
+  (add-hook 'kill-buffer-hook #'elmux--tab-line-unregister)
   (unless (memq 'elmux--workspace-indicator global-mode-string)
     (setq global-mode-string
           (append global-mode-string '(elmux--workspace-indicator))))
@@ -651,6 +677,7 @@ commands that compute DIRECTORY first (see Commentary)."
         (append elmux--workspaces
                 (list (cons name (file-name-as-directory
                                   (expand-file-name directory))))))
+  (elmux--tab-line-sweep name)
   (elmux--sidebar-sync)
   (message "Workspace %s created; switch to it from the sidebar" name)
   name)
@@ -697,6 +724,7 @@ workspace root when the workspace is registered."
             (vterm-send-string command)
             (vterm-send-return))
           (rename-buffer buffer-name t)
+          (elmux--tab-line-register)
           (when (fboundp 'vterm-app-mode)
             (vterm-app-mode 1)))))))
 
@@ -752,6 +780,7 @@ When nil, restored app vterms are plain shells in the workspace root.")
                 (vterm-send-string command)
                 (vterm-send-return))
               (rename-buffer buffer-name t)
+              (elmux--tab-line-register)
               (when (fboundp 'vterm-app-mode)
                 (vterm-app-mode 1))
               (current-buffer)))))))
@@ -977,6 +1006,7 @@ When nil, restored app vterms are plain shells in the workspace root.")
              (mapcar (lambda (ws)
                        (if (equal (car ws) name) (cons new (cdr ws)) ws))
                      elmux--workspaces))
+       (elmux--tab-order-rename-workspace name new)
        (when (member (elmux--workspace-tab-name name) (elmux--tab-names))
          (tab-bar-rename-tab-by-name (elmux--workspace-tab-name name)
                                      (elmux--workspace-tab-name new))))
@@ -1008,6 +1038,7 @@ Session workspaces are killed; plain tabs are closed."
         (pcase target
           (`(ws . ,name)
            (setq elmux--workspaces (assoc-delete-all name elmux--workspaces))
+           (elmux--tab-order-forget-workspace name)
            (let ((tab-name (elmux--workspace-tab-name name))
                  (names (elmux--tab-names)))
              (when (and (member tab-name names) (> (length names) 1))
@@ -1059,6 +1090,194 @@ Session workspaces are killed; plain tabs are closed."
 (define-key elmux-sidebar-mode-map (kbd "a x") #'elmux-sidebar-codex)
 (define-key elmux-sidebar-mode-map (kbd "a o") #'elmux-sidebar-opencode)
 (define-key elmux-sidebar-mode-map (kbd "a t") #'elmux-sidebar-vterm)
+;;; Tab line
+
+(require 'tab-line)
+
+(defun elmux--app-buffer-workspace (name)
+  "Return the workspace of a *WORKSPACE:APP* buffer NAME, or nil.
+Only registered workspaces and `elmux-workspace-main-name' count, so
+buffers that merely look like *X:Y* (\"*rg: pattern*\") are not mistaken
+for workspaces of their own."
+  (when-let* ((parsed (elmux--parse-app-buffer-name name))
+              (ws (car parsed)))
+    (when (or (assoc ws elmux--workspaces)
+              (equal ws elmux-workspace-main-name))
+      ws)))
+
+(defun elmux--directory-workspace (dir)
+  "Return the registered workspace whose root contains DIR, longest root first.
+Remote directories return nil without consulting a file-name handler,
+which could otherwise block."
+  (unless (file-remote-p dir)
+    (let ((dir (file-name-as-directory (expand-file-name dir)))
+          (best nil)
+          (best-len nil))
+      (dolist (ws elmux--workspaces)
+        (let ((root (file-name-as-directory (cdr ws))))
+          (when (and (string-prefix-p root dir)
+                     (or (null best-len) (> (length root) best-len)))
+            (setq best (car ws)
+                  best-len (length root)))))
+      best)))
+
+(defun elmux--buffer-workspace (&optional buf)
+  "Return the workspace owning BUF: by app buffer name, else by directory."
+  (let ((buf (or buf (current-buffer))))
+    (when (buffer-live-p buf)
+      (or (elmux--app-buffer-workspace (buffer-name buf))
+          (elmux--directory-workspace
+           (buffer-local-value 'default-directory buf))))))
+
+(defun elmux--tab-line-candidate-p (&optional buf)
+  "Return non-nil when BUF belongs to a workspace and should be a tab.
+Membership alone is not enough: a workspace root is also the
+`default-directory' of transient buffers like *compilation* and *grep*,
+so a buffer must additionally visit a file, be a dired, or be a
+workspace app vterm."
+  (let ((buf (or buf (current-buffer))))
+    (and (buffer-live-p buf)
+         (not (string-prefix-p " " (buffer-name buf)))
+         (elmux--buffer-workspace buf)
+         (or (buffer-file-name buf)
+             (provided-mode-derived-p
+              (buffer-local-value 'major-mode buf) 'dired-mode)
+             (elmux--app-buffer-workspace (buffer-name buf)))
+         (car (tab-line-tabs-non-excluded (list buf)))
+         t)))
+
+(defvar elmux--tab-order nil
+  "Alist of workspace NAME to its buffers, in tab order.
+Keyed on buffer objects: buffer names are not stable identities, since
+uniquify renames buffers when a same-named file is opened elsewhere (and
+renames them back when it is killed), `rename-buffer' can append a <2>
+suffix, and `elmux-rename-session' renames freely.")
+
+(defvar elmux--tab-order-names nil
+  "Alist of workspace NAME to buffer NAMES, in tab order.
+The printable projection of `elmux--tab-order' that rides in
+`desktop-globals-to-save'.  Read when seeding a newly registered
+buffer's position, rewritten wholesale at desktop-save time.")
+
+(defvar-local elmux--tab-workspace nil
+  "Workspace owning this buffer, resolved once when it is registered.
+Cached so `elmux--tab-line-tabs' never has to touch the filesystem.")
+
+(defun elmux--workspace-buffers (ws)
+  "Live buffers of workspace WS, in tab order."
+  (seq-filter #'buffer-live-p
+              (alist-get ws elmux--tab-order nil nil #'equal)))
+
+(defun elmux--tab-order-seed-index (ws name)
+  "Position NAME had in the persisted order of WS, or nil."
+  (cl-position name (alist-get ws elmux--tab-order-names nil nil #'equal)
+               :test #'equal))
+
+(defun elmux--tab-order-insert (ws buf)
+  "Add BUF to WS's tab order, at its persisted position when it has one."
+  (let* ((cur (alist-get ws elmux--tab-order nil nil #'equal))
+         (idx (elmux--tab-order-seed-index ws (buffer-name buf)))
+         (at (and idx
+                  (cl-position-if
+                   (lambda (b)
+                     (let ((other (elmux--tab-order-seed-index
+                                   ws (buffer-name b))))
+                       (or (null other) (> other idx))))
+                   cur))))
+    (setf (alist-get ws elmux--tab-order nil nil #'equal)
+          (if at
+              (append (seq-take cur at) (list buf) (seq-drop cur at))
+            (append cur (list buf))))))
+
+(defvar elmux-tab-order-max 40
+  "Most buffer names to persist per workspace.
+Bounds the desktop file: every file ever visited under a workspace root
+would otherwise accumulate across restarts.")
+
+(defun elmux--tab-order-snapshot ()
+  "Project the live tab order onto `elmux--tab-order-names' for desktop-save.
+Drops workspaces that are no longer registered and truncates to
+`elmux-tab-order-max', so the persisted value cannot grow without bound."
+  (setq elmux--tab-order-names
+        (delq nil
+              (mapcar
+               (lambda (entry)
+                 (let ((ws (car entry)))
+                   (when (or (assoc ws elmux--workspaces)
+                             (equal ws elmux-workspace-main-name))
+                     (when-let* ((names (mapcar #'buffer-name
+                                                (elmux--workspace-buffers ws))))
+                       (cons ws (seq-take names elmux-tab-order-max))))))
+               elmux--tab-order))))
+
+(defun elmux--tab-order-restore ()
+  "Register workspace buffers after a desktop restore.
+`elmux--restore-app' recreates app vterms inside `save-window-excursion',
+so they are never displayed and would otherwise never be registered."
+  (elmux--tab-line-sweep))
+
+(defun elmux--tab-line-tabs ()
+  "Tabs for the active buffer's workspace, in tab order.
+Runs during redisplay for every window showing a workspace buffer, so it
+reads only cached state and writes nothing.  Never returns nil: an empty
+`tab-line-format' still costs a screen line."
+  (let ((buf (current-buffer)))
+    (or (ignore-errors
+          (and elmux--tab-workspace
+               (elmux--workspace-buffers elmux--tab-workspace)))
+        (list buf))))
+
+(defun elmux--tab-name (buffer &optional _buffers)
+  "Label BUFFER as a tab: *WORKSPACE:APP* shows as APP, others by name."
+  (let ((name (buffer-name buffer)))
+    (or (cdr (and (elmux--app-buffer-workspace name)
+                  (elmux--parse-app-buffer-name name)))
+        name)))
+
+(defun elmux--tab-line-register (&optional buf)
+  "Give BUF a tab-line scoped to its workspace.  Idempotent; nil if ineligible."
+  (let ((buf (or buf (current-buffer))))
+    (when (elmux--tab-line-candidate-p buf)
+      (let ((ws (elmux--buffer-workspace buf)))
+        (unless (memq buf (alist-get ws elmux--tab-order nil nil #'equal))
+          (elmux--tab-order-insert ws buf))
+        (with-current-buffer buf
+          (setq elmux--tab-workspace ws)
+          (setq-local tab-line-tabs-function #'elmux--tab-line-tabs)
+          ;; the close button buries, which cannot remove a buffer from a
+          ;; workspace-derived strip, so it would visibly do nothing
+          (setq-local tab-line-close-button-show nil)
+          (setq-local tab-line-tab-name-function #'elmux--tab-name)
+          (tab-line-mode 1))
+        ws))))
+
+(defun elmux--tab-line-unregister (&optional buf)
+  "Drop BUF from its workspace's tab order."
+  (let ((buf (or buf (current-buffer))))
+    (dolist (entry elmux--tab-order)
+      (setcdr entry (delq buf (cdr entry))))))
+
+(defun elmux--tab-order-rename-workspace (old new)
+  "Move workspace OLD's tab order, and its buffers' cached workspace, to NEW."
+  (when-let* ((entry (assoc old elmux--tab-order)))
+    (setcar entry new)
+    (dolist (buf (cdr entry))
+      (when (buffer-live-p buf)
+        (with-current-buffer buf (setq elmux--tab-workspace new)))))
+  (when-let* ((entry (assoc old elmux--tab-order-names)))
+    (setcar entry new)))
+
+(defun elmux--tab-order-forget-workspace (ws)
+  "Drop workspace WS from the tab order entirely."
+  (setq elmux--tab-order (assoc-delete-all ws elmux--tab-order))
+  (setq elmux--tab-order-names (assoc-delete-all ws elmux--tab-order-names)))
+
+(defun elmux--tab-line-sweep (&optional ws)
+  "Register every eligible existing buffer, or only those of workspace WS."
+  (dolist (buf (buffer-list))
+    (when (or (null ws) (equal ws (elmux--buffer-workspace buf)))
+      (elmux--tab-line-register buf))))
+
 (with-eval-after-load 'evil
   (evil-set-initial-state 'elmux-sidebar-mode 'normal)
   (evil-define-key 'normal elmux-sidebar-mode-map

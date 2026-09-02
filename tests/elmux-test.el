@@ -580,5 +580,444 @@ clean state and check the handler recreates the buffer."
     (should-not (string-match-p "emacs-agents"
                                 (alist-get 'command (aref (alist-get 'hooks (aref stop 0)) 0))))))
 
+;;; Tab line
+
+(defmacro elmux-test--with-tab-order (&rest body)
+  "Run BODY with the tab-line globals bound to fresh, empty values."
+  (declare (indent 0))
+  `(let ((elmux--workspaces nil)
+         (elmux--tab-order nil)
+         (elmux--tab-order-names nil))
+     ,@body))
+
+(defun elmux-test--dir-buffer (name dir)
+  "Create a buffer NAME whose `default-directory' is DIR."
+  (let ((buf (get-buffer-create name)))
+    (with-current-buffer buf
+      (setq default-directory (file-name-as-directory dir)))
+    buf))
+
+(ert-deftest elmux-app-buffer-workspace-requires-registration ()
+  (elmux-test--with-tab-order
+    (setq elmux--workspaces '(("feat" . "/tmp/feat/")))
+    (should (equal (elmux--app-buffer-workspace "*feat:claude*") "feat"))
+    ;; main is a workspace for app buffers even though it has no root
+    (should (equal (elmux--app-buffer-workspace "*main:vterm*") "main"))
+    ;; an unregistered workspace is not one
+    (should-not (elmux--app-buffer-workspace "*other:claude*"))
+    ;; buffers that merely look like *X:Y* are not workspaces
+    (should-not (elmux--app-buffer-workspace "*rg: pattern*"))
+    (should-not (elmux--app-buffer-workspace "*scratch*"))))
+
+(ert-deftest elmux-directory-workspace-longest-root-wins ()
+  (elmux-test--with-tab-order
+    (setq elmux--workspaces '(("proj" . "/tmp/proj/")
+                              ("br" . "/tmp/proj/.worktrees/br/")))
+    (should (equal (elmux--directory-workspace "/tmp/proj/src/") "proj"))
+    (should (equal (elmux--directory-workspace "/tmp/proj/.worktrees/br/src/")
+                   "br"))
+    (should-not (elmux--directory-workspace "/tmp/elsewhere/"))))
+
+(ert-deftest elmux-directory-workspace-ignores-remote ()
+  (elmux-test--with-tab-order
+    (setq elmux--workspaces '(("proj" . "/tmp/proj/")))
+    ;; must not consult a file-name handler: that can block in redisplay
+    (should-not (elmux--directory-workspace "/ssh:host:/tmp/proj/src/"))))
+
+(ert-deftest elmux-tab-line-candidate-p ()
+  (elmux-test--with-tab-order
+    (setq elmux--workspaces '(("proj" . "/tmp/proj/")))
+    (let ((app (elmux-test--dir-buffer "*proj:claude*" "/tmp/proj/"))
+          (internal (elmux-test--dir-buffer " *hidden*" "/tmp/proj/"))
+          (scratch (elmux-test--dir-buffer "*compilation*" "/tmp/proj/"))
+          (outside (elmux-test--dir-buffer "*other:claude*" "/tmp/nope/")))
+      (unwind-protect
+          (progn
+            (should (elmux--tab-line-candidate-p app))
+            ;; a buffer visiting no file, not dired, not an app vterm
+            (should-not (elmux--tab-line-candidate-p scratch))
+            (should-not (elmux--tab-line-candidate-p internal))
+            (should-not (elmux--tab-line-candidate-p outside))
+            (with-current-buffer app
+              (setq-local tab-line-exclude t)
+              (should-not (elmux--tab-line-candidate-p app))))
+        (mapc #'kill-buffer (list app internal scratch outside))))))
+
+(ert-deftest elmux-tab-line-candidate-p-accepts-files-and-dired ()
+  (elmux-test--with-tab-order
+    (let ((dir (make-temp-file "elmux-ws" t)))
+      (unwind-protect
+          (let* ((elmux--workspaces (list (cons "proj" (file-name-as-directory dir))))
+                 (file (expand-file-name "foo.el" dir)))
+            (with-temp-file file (insert ";; x"))
+            (let ((fbuf (find-file-noselect file))
+                  (dbuf (dired-noselect dir)))
+              (unwind-protect
+                  (progn
+                    (should (elmux--tab-line-candidate-p fbuf))
+                    (should (elmux--tab-line-candidate-p dbuf)))
+                (kill-buffer fbuf)
+                (kill-buffer dbuf))))
+        (delete-directory dir t)))))
+
+(defun elmux-test--app-bufs (ws &rest apps)
+  "Create workspace WS app buffers for APPS rooted at /tmp/WS/."
+  (mapcar (lambda (app)
+            (elmux-test--dir-buffer (format "*%s:%s*" ws app)
+                                    (format "/tmp/%s/" ws)))
+          apps))
+
+(ert-deftest elmux-tab-order-appends-in-registration-order ()
+  (elmux-test--with-tab-order
+    (setq elmux--workspaces '(("proj" . "/tmp/proj/")))
+    (let ((bufs (elmux-test--app-bufs "proj" "claude" "codex" "vterm")))
+      (unwind-protect
+          (progn
+            (mapc #'elmux--tab-line-register bufs)
+            (should (equal (elmux--workspace-buffers "proj") bufs)))
+        (mapc #'kill-buffer bufs)))))
+
+(ert-deftest elmux-tab-order-stable-across-buffer-list-shuffle ()
+  (elmux-test--with-tab-order
+    (setq elmux--workspaces '(("proj" . "/tmp/proj/")))
+    (let ((bufs (elmux-test--app-bufs "proj" "claude" "codex" "vterm")))
+      (unwind-protect
+          (progn
+            (mapc #'elmux--tab-line-register bufs)
+            ;; reorder buffer-list the way visiting buffers does
+            (set-buffer (nth 2 bufs)) (bury-buffer (nth 0 bufs))
+            (set-buffer (nth 1 bufs))
+            (should (equal (elmux--workspace-buffers "proj") bufs)))
+        (mapc #'kill-buffer bufs)))))
+
+(ert-deftest elmux-tab-order-survives-buffer-rename ()
+  (elmux-test--with-tab-order
+    (setq elmux--workspaces '(("proj" . "/tmp/proj/")))
+    (let ((bufs (elmux-test--app-bufs "proj" "claude" "codex")))
+      (unwind-protect
+          (progn
+            (mapc #'elmux--tab-line-register bufs)
+            ;; uniquify renames buffers behind our back; order must not care
+            (with-current-buffer (car bufs) (rename-buffer "*proj:claude*<2>"))
+            (should (equal (elmux--workspace-buffers "proj") bufs)))
+        (mapc #'kill-buffer bufs)))))
+
+(ert-deftest elmux-tab-order-register-is-idempotent ()
+  (elmux-test--with-tab-order
+    (setq elmux--workspaces '(("proj" . "/tmp/proj/")))
+    (let ((bufs (elmux-test--app-bufs "proj" "claude")))
+      (unwind-protect
+          (progn
+            (elmux--tab-line-register (car bufs))
+            (elmux--tab-line-register (car bufs))
+            (should (equal (elmux--workspace-buffers "proj") bufs)))
+        (mapc #'kill-buffer bufs)))))
+
+(ert-deftest elmux-tab-order-ignores-non-candidates ()
+  (elmux-test--with-tab-order
+    (setq elmux--workspaces '(("proj" . "/tmp/proj/")))
+    (let ((junk (elmux-test--dir-buffer "*compilation*" "/tmp/proj/")))
+      (unwind-protect
+          (progn
+            (elmux--tab-line-register junk)
+            (should-not (elmux--workspace-buffers "proj")))
+        (kill-buffer junk)))))
+
+(ert-deftest elmux-tab-order-prunes-on-unregister ()
+  (elmux-test--with-tab-order
+    (setq elmux--workspaces '(("proj" . "/tmp/proj/")))
+    (let ((bufs (elmux-test--app-bufs "proj" "claude" "codex")))
+      (unwind-protect
+          (progn
+            (mapc #'elmux--tab-line-register bufs)
+            (elmux--tab-line-unregister (car bufs))
+            (should (equal (elmux--workspace-buffers "proj") (cdr bufs))))
+        (mapc #'kill-buffer bufs)))))
+
+(ert-deftest elmux-tab-order-seeded-from-persisted-names ()
+  (elmux-test--with-tab-order
+    (setq elmux--workspaces '(("proj" . "/tmp/proj/")))
+    ;; desktop restored an order in which codex precedes claude
+    (setq elmux--tab-order-names '(("proj" "*proj:codex*" "*proj:claude*")))
+    (let ((bufs (elmux-test--app-bufs "proj" "claude" "codex")))
+      (unwind-protect
+          (progn
+            ;; registered claude-first, but the persisted order must win
+            (mapc #'elmux--tab-line-register bufs)
+            (should (equal (elmux--workspace-buffers "proj")
+                           (list (nth 1 bufs) (nth 0 bufs)))))
+        (mapc #'kill-buffer bufs)))))
+
+(ert-deftest elmux-tab-line-tabs-writes-nothing ()
+  "The tabs function runs in redisplay; it must not mutate the order."
+  (elmux-test--with-tab-order
+    (setq elmux--workspaces '(("proj" . "/tmp/proj/")))
+    (let ((bufs (elmux-test--app-bufs "proj" "claude" "codex")))
+      (unwind-protect
+          (progn
+            (mapc #'elmux--tab-line-register bufs)
+            (let ((before (copy-tree elmux--tab-order)))
+              (with-current-buffer (car bufs)
+                (elmux--tab-line-tabs)
+                (elmux--tab-line-tabs))
+              (should (equal elmux--tab-order before))))
+        (mapc #'kill-buffer bufs)))))
+
+(ert-deftest elmux-tab-line-tabs-scoped-to-workspace ()
+  (elmux-test--with-tab-order
+    (setq elmux--workspaces '(("a" . "/tmp/a/") ("b" . "/tmp/b/")))
+    (let ((abufs (elmux-test--app-bufs "a" "claude" "codex"))
+          (bbufs (elmux-test--app-bufs "b" "claude")))
+      (unwind-protect
+          (progn
+            (mapc #'elmux--tab-line-register (append abufs bbufs))
+            (with-current-buffer (car abufs)
+              (should (equal (elmux--tab-line-tabs) abufs)))
+            (with-current-buffer (car bbufs)
+              (should (equal (elmux--tab-line-tabs) bbufs))))
+        (mapc #'kill-buffer (append abufs bbufs))))))
+
+(ert-deftest elmux-tab-line-tabs-never-empty ()
+  "A blank strip still costs a screen line, so never return nil."
+  (elmux-test--with-tab-order
+    (setq elmux--workspaces '(("proj" . "/tmp/proj/")))
+    (let ((bufs (elmux-test--app-bufs "proj" "claude")))
+      (unwind-protect
+          (progn
+            (mapc #'elmux--tab-line-register bufs)
+            ;; the workspace is deleted out from under a live app buffer
+            (setq elmux--workspaces nil
+                  elmux--tab-order nil)
+            (with-current-buffer (car bufs)
+              (should (equal (elmux--tab-line-tabs) (list (car bufs))))))
+        (mapc #'kill-buffer bufs)))))
+
+(ert-deftest elmux-tab-line-tabs-survives-errors ()
+  "An error inside redisplay is very noisy; degrade instead."
+  (elmux-test--with-tab-order
+    (setq elmux--workspaces '(("proj" . "/tmp/proj/")))
+    (let ((bufs (elmux-test--app-bufs "proj" "claude")))
+      (unwind-protect
+          (progn
+            (mapc #'elmux--tab-line-register bufs)
+            (cl-letf (((symbol-function 'elmux--workspace-buffers)
+                       (lambda (&rest _) (error "boom"))))
+              (with-current-buffer (car bufs)
+                (should (equal (elmux--tab-line-tabs) (list (car bufs)))))))
+        (mapc #'kill-buffer bufs)))))
+
+(ert-deftest elmux-tab-name-strips-workspace-prefix ()
+  (elmux-test--with-tab-order
+    (setq elmux--workspaces '(("proj" . "/tmp/proj/")))
+    (let ((bufs (elmux-test--app-bufs "proj" "claude")))
+      (unwind-protect
+          (progn
+            (should (equal (elmux--tab-name (car bufs)) "claude"))
+            (should (equal (elmux--tab-name (get-buffer-create "foo.el"))
+                           "foo.el")))
+        (mapc #'kill-buffer bufs)
+        (kill-buffer "foo.el")))))
+
+(ert-deftest elmux-tab-order-snapshot-projects-live-order ()
+  (elmux-test--with-tab-order
+    (setq elmux--workspaces '(("proj" . "/tmp/proj/")))
+    (let ((bufs (elmux-test--app-bufs "proj" "claude" "codex"))
+          (gone (elmux-test--app-bufs "dead" "claude")))
+      (unwind-protect
+          (progn
+            (mapc #'elmux--tab-line-register bufs)
+            ;; an order entry whose workspace is no longer registered
+            (setf (alist-get "dead" elmux--tab-order nil nil #'equal) gone)
+            (elmux--tab-order-snapshot)
+            (should (equal (alist-get "proj" elmux--tab-order-names
+                                      nil nil #'equal)
+                           '("*proj:claude*" "*proj:codex*")))
+            (should-not (assoc "dead" elmux--tab-order-names)))
+        (mapc #'kill-buffer (append bufs gone))))))
+
+(ert-deftest elmux-tab-order-snapshot-truncates ()
+  (elmux-test--with-tab-order
+    (setq elmux--workspaces '(("proj" . "/tmp/proj/")))
+    (let* ((elmux-tab-order-max 3)
+           (bufs (apply #'elmux-test--app-bufs "proj"
+                        '("a" "b" "c" "d" "e"))))
+      (unwind-protect
+          (progn
+            (mapc #'elmux--tab-line-register bufs)
+            (elmux--tab-order-snapshot)
+            (should (= (length (alist-get "proj" elmux--tab-order-names
+                                          nil nil #'equal))
+                       3)))
+        (mapc #'kill-buffer bufs)))))
+
+(ert-deftest elmux-tab-order-restore-registers-existing-buffers ()
+  "Desktop recreates app vterms without displaying them; restore must find them."
+  (elmux-test--with-tab-order
+    (setq elmux--workspaces '(("proj" . "/tmp/proj/")))
+    (setq elmux--tab-order-names '(("proj" "*proj:codex*" "*proj:claude*")))
+    (let ((bufs (elmux-test--app-bufs "proj" "claude" "codex")))
+      (unwind-protect
+          (progn
+            (elmux--tab-order-restore)
+            (should (equal (elmux--workspace-buffers "proj")
+                           (list (nth 1 bufs) (nth 0 bufs)))))
+        (mapc #'kill-buffer bufs)))))
+
+(ert-deftest elmux-setup-persists-tab-order-via-desktop ()
+  (elmux-test--with-state-dir
+   (let ((desktop-globals-to-save nil)
+         (desktop-save-hook nil)
+         (desktop-after-read-hook nil)
+         (find-file-hook nil)
+         (dired-mode-hook nil)
+         (kill-buffer-hook nil)
+         (elmux--watch nil)
+         (elmux--poll-timer nil)
+         (had-tab-bar tab-bar-mode))
+     (unwind-protect
+         (progn
+           (elmux-setup)
+           (should (memq 'elmux--tab-order-names desktop-globals-to-save))
+           (should (memq 'elmux--tab-order-snapshot desktop-save-hook))
+           (should (memq 'elmux--tab-order-restore desktop-after-read-hook))
+           (should (memq 'elmux--tab-line-register find-file-hook))
+           (should (memq 'elmux--tab-line-register dired-mode-hook))
+           ;; vterm-mode-hook is not declared special by vterm, so it cannot
+           ;; be let-bound here; dired-mode-hook covers the same wiring.
+           (should (memq 'elmux--tab-line-unregister kill-buffer-hook)))
+       (when elmux--watch (file-notify-rm-watch elmux--watch))
+       (when elmux--poll-timer (cancel-timer elmux--poll-timer))
+       (unless had-tab-bar (tab-bar-mode -1))))))
+
+(ert-deftest elmux-workspace-create-sweeps-existing-buffers ()
+  "A workspace can be registered after its files are already open."
+  (elmux-test--with-tab-order
+    (let ((dir (make-temp-file "elmux-ws" t)))
+      (unwind-protect
+          (let ((file (expand-file-name "foo.el" dir)))
+            (with-temp-file file (insert ";; x"))
+            (let ((fbuf (find-file-noselect file)))
+              (unwind-protect
+                  (progn
+                    (should-not (elmux--workspace-buffers "late"))
+                    (elmux-workspace-create "late" dir)
+                    (should (equal (elmux--workspace-buffers "late")
+                                   (list fbuf))))
+                (kill-buffer fbuf))))
+        (delete-directory dir t)))))
+
+(ert-deftest elmux-sidebar-rename-rekeys-tab-order ()
+  (elmux-test--with-state-dir
+   (elmux-test--with-tab-order
+     (setq elmux--workspaces (list (cons "feat" "/tmp/feat/")))
+     (let ((bufs (elmux-test--app-bufs "feat" "claude")))
+       (unwind-protect
+           (progn
+             (mapc #'elmux--tab-line-register bufs)
+             (elmux-test--with-sidebar
+              (goto-char (point-min))
+              (search-forward "feat")
+              (cl-letf (((symbol-function 'read-string)
+                         (lambda (&rest _) "feat2")))
+                (elmux-sidebar-rename))
+              (should (equal (elmux--workspace-buffers "feat2") bufs))
+              (should-not (elmux--workspace-buffers "feat"))))
+         (mapc #'kill-buffer bufs))))))
+
+(ert-deftest elmux-sidebar-delete-forgets-tab-order ()
+  (elmux-test--with-state-dir
+   (elmux-test--with-tab-order
+     (setq elmux--workspaces (list (cons "feat" "/tmp/feat/")))
+     (let ((bufs (elmux-test--app-bufs "feat" "claude")))
+       (unwind-protect
+           (progn
+             (mapc #'elmux--tab-line-register bufs)
+             (elmux-test--with-sidebar
+              (setq elmux--sidebar-marks '((ws . "feat")))
+              (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) t)))
+                (elmux-sidebar-delete))
+              (should-not (assoc "feat" elmux--tab-order))))
+         (mapc #'kill-buffer bufs))))))
+
+(ert-deftest elmux-elmux-ui-buffers-are-never-tabs ()
+  (elmux-test--with-tab-order
+    (setq elmux--workspaces '(("proj" . "/tmp/proj/")))
+    (let ((side (elmux-test--dir-buffer "*elmux-sidebar*" "/tmp/proj/"))
+          (dash (elmux-test--dir-buffer "*elmux*" "/tmp/proj/")))
+      (unwind-protect
+          (progn
+            (with-current-buffer side (elmux-sidebar-mode))
+            (with-current-buffer dash (elmux-dashboard-mode))
+            (should-not (elmux--tab-line-candidate-p side))
+            (should-not (elmux--tab-line-candidate-p dash)))
+        (kill-buffer side)
+        (kill-buffer dash)))))
+
+(ert-deftest elmux-restore-app-registers-the-buffer ()
+  "vterm-mode-hook fires before rename-buffer, and the restored buffer is
+never displayed, so registration must happen at the creation site."
+  (elmux-test--with-tab-order
+    (setq elmux--workspaces (list (cons "feat" (expand-file-name "~/"))))
+    (elmux-test--with-stub-vterm sent
+      (let ((buf (elmux--restore-app "feat" "claude" (expand-file-name "~/"))))
+        (unwind-protect
+            (progn
+              (should (equal (buffer-name buf) "*feat:claude*"))
+              (should (equal (elmux--workspace-buffers "feat") (list buf)))
+              (should (equal (buffer-local-value 'elmux--tab-workspace buf)
+                             "feat")))
+          (kill-buffer buf))))))
+
+(ert-deftest elmux-workspace-app-registers-the-buffer ()
+  (elmux-test--with-tab-order
+    (setq elmux--workspaces (list (cons "feat" (expand-file-name "~/"))))
+    (elmux-test--with-stub-vterm sent
+      (cl-letf (((symbol-function 'elmux--current-workspace-name)
+                 (lambda () "feat"))
+                ((symbol-function 'switch-to-buffer) #'set-buffer))
+        (let ((buf (elmux--workspace-app "claude" "claude")))
+          (unwind-protect
+              (should (equal (elmux--workspace-buffers "feat")
+                             (list (get-buffer "*feat:claude*"))))
+            (kill-buffer (get-buffer "*feat:claude*"))))))))
+
+(defun elmux-test--render-tab-line ()
+  "Labels the real `tab-line-format' produces for the current buffer."
+  (mapconcat (lambda (item)
+               (if (stringp item) (substring-no-properties item) ""))
+             (tab-line-format) ""))
+
+(ert-deftest elmux-tab-line-renders-workspace-buffers ()
+  "Exercise the real rendering path, not just the tabs function.
+`redisplay' never evaluates a tab line in batch, but `tab-line-format'
+can be called directly."
+  (elmux-test--with-tab-order
+    (setq elmux--workspaces '(("proj" . "/tmp/proj/")))
+    (let ((bufs (elmux-test--app-bufs "proj" "claude" "codex")))
+      (unwind-protect
+          (progn
+            (mapc #'elmux--tab-line-register bufs)
+            (with-current-buffer (car bufs)
+              ;; app buffers show as APP, not *WORKSPACE:APP*
+              (should (equal (elmux-test--render-tab-line) "|claude|codex|"))
+              ;; and rendering must leave the order untouched
+              (let ((before (copy-tree elmux--tab-order)))
+                (elmux-test--render-tab-line)
+                (should (equal elmux--tab-order before)))))
+        (mapc #'kill-buffer bufs)))))
+
+(ert-deftest elmux-tab-line-absent-outside-workspaces ()
+  "A tab-line-format that merely evaluates to nil still costs a screen line,
+so buffers outside every workspace must not get one at all."
+  (elmux-test--with-tab-order
+    (setq elmux--workspaces '(("proj" . "/tmp/proj/")))
+    (let ((outside (elmux-test--dir-buffer "*elsewhere:claude*" "/tmp/nope/")))
+      (unwind-protect
+          (with-current-buffer outside
+            (elmux--tab-line-register)
+            (should-not tab-line-mode)
+            (should-not tab-line-format))
+        (kill-buffer outside)))))
+
 (provide 'elmux-test)
 ;;; elmux-test.el ends here

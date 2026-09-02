@@ -267,6 +267,14 @@
 	`(lsp-face-highlight-read ((,class (:background ,bg3 :weight ,'bold :underline t))))
 	`(lsp-face-highlight-textual ((,class (:background ,bg3 :weight ,'bold :underline t))))
 	`(header-line ((,class (:background ,bg2 :weight ,'bold :underline (:color ,region :style line :position t)))))
+        ;; Tab line: the per-workspace strip elmux renders above breadcrumb's
+        ;; header-line.  The current tab shares header-line's background so
+        ;; the two stacked rows read as one unit.
+        `(tab-line ((,class (:background ,bg1 :foreground ,fg2 :box nil))))
+        `(tab-line-tab ((,class (:background ,bg2 :foreground ,keyword :weight ,'bold :box nil))))
+        `(tab-line-tab-current ((,class (:background ,bg2 :foreground ,keyword :weight ,'bold :box nil))))
+        `(tab-line-tab-inactive ((,class (:background ,bg1 :foreground ,fg2 :box nil))))
+        `(tab-line-highlight ((,class (:background ,bg3 :foreground ,fg1 :box nil))))
 	`(lsp-headerline-breadcrumb-project-prefix-face ((,class (:foreground ,fg0 :weight ,'normal))))
 	`(lsp-headerline-breadcrumb-prefix-face ((,class (:foreground ,fg0 :weight ,'normal))))
 	`(lsp-headerline-breadcrumb-symbols-face ((,class (:foreground ,fg0 :weight ,'normal))))

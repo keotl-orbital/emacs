@@ -116,6 +116,8 @@
 (define-key evil-normal-state-map (kbd "SPC a a x") 'elmux-workspace-codex)
 (define-key evil-normal-state-map (kbd "SPC a a o") 'elmux-workspace-opencode)
 (define-key evil-normal-state-map (kbd "SPC a a d") 'elmux-dashboard)
+(define-key evil-normal-state-map (kbd "SPC a a l") 'tab-line-switch-to-next-tab)
+(define-key evil-normal-state-map (kbd "SPC a a h") 'tab-line-switch-to-prev-tab)
 (define-key evil-normal-state-map (kbd "SPC a d") 'dictionary-search)
 
 ;; Quit

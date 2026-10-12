@@ -535,8 +535,12 @@ Notification, otherwise identically to claude)."
   (elmux--install-hooks (expand-file-name "~/.codex/hooks.json")
                          elmux--codex-hook-events))
 
+(defconst elmux--directory
+  (file-name-directory (or load-file-name buffer-file-name))
+  "Directory holding elmux.el and the plugin files shipped with it.")
+
 (defvar elmux-opencode-plugin-source
-  (expand-file-name "elmux-opencode-plugin.js" user-emacs-directory)
+  (expand-file-name "elmux-opencode-plugin.js" elmux--directory)
   "The elmux opencode status plugin shipped alongside elmux.el.")
 
 (defvar elmux-opencode-plugin-target
@@ -544,7 +548,7 @@ Notification, otherwise identically to claude)."
   "Where the status plugin is installed; opencode auto-loads this directory.")
 
 (defvar elmux-pi-extension-source
-  (expand-file-name "elmux-pi-extension.ts" user-emacs-directory)
+  (expand-file-name "elmux-pi-extension.ts" elmux--directory)
   "The elmux pi status extension shipped alongside elmux.el.")
 
 (defvar elmux-pi-extension-target

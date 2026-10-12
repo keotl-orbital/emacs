@@ -1,4 +1,4 @@
-;;; vimgolf.el --- VimGolf interface for the One True Editor
+;;; vimgolf.el --- VimGolf interface for the One True Editor  -*- lexical-binding: t; -*-
 ;; Copyright (C) never, by no one
 
 ;; Author: Tim Visher <tim.visher@gmail.com>

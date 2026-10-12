@@ -1,4 +1,4 @@
-;;; savoy-truffle-light-theme.el --- Light Theme Variant
+;;; savoy-truffle-light-theme.el --- Light Theme Variant  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2020 , Kento Lauzon
 

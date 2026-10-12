@@ -1,3 +1,5 @@
+;;; reload-config.el --- -*- lexical-binding: t; -*-
+
 (defun reload-config ()
   "Re-load init.el and everything it loads."
   (interactive)

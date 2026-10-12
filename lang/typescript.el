@@ -1,3 +1,5 @@
+;;; typescript.el --- -*- lexical-binding: t; -*-
+
 (with-eval-after-load 'eglot
   (add-to-list 'eglot-server-programs
                '(typescript-ts-mode . ("~/.emacs.d/.cache/lsp/npm/node_modules/.bin/typescript-language-server" "--stdio")))

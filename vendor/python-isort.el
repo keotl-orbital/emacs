@@ -1,4 +1,4 @@
-;;; py-isort.el --- Use isort to sort the imports in a Python buffer
+;;; py-isort.el --- Use isort to sort the imports in a Python buffer  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2014, Friedrich Paetzke <paetzke@fastmail.fm>
 

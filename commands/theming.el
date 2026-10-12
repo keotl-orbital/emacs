@@ -1,3 +1,5 @@
+;;; theming.el --- -*- lexical-binding: t; -*-
+
 (defun load-light-theme ()
   "Load the Savoy Truffle Light theme."
   (interactive)

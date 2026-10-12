@@ -1,3 +1,5 @@
+;;; doom-bepo-autoload.el --- -*- lexical-binding: t; -*-
+
 ;;; From doom emacs
 ;;; input/layout/autoload/bepo.el -*- lexical-binding: t; -*-
 ;;;###if (modulep! +bepo)

@@ -1,4 +1,4 @@
-;;; savoy-truffle-theme.el --- Theme 
+;;; savoy-truffle-theme.el --- Theme  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2020 , Kento Lauzon
 

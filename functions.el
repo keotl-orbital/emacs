@@ -1,3 +1,5 @@
+;;; functions.el --- -*- lexical-binding: t; -*-
+
 (defun snake-to-camel (text)
   (let ((cased (replace-regexp-in-string "_." 'upcase (downcase text) t t)))
     (let ((underscores-removed (replace-regexp-in-string "_" "" cased t t)))

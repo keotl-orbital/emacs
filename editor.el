@@ -1,3 +1,5 @@
+;;; editor.el --- -*- lexical-binding: t; -*-
+
 (load  (concat (file-name-directory load-file-name) "vendor/doom-bepo-autoload.el"))
 (setq +layout-bepo-cr-rotation-style 'ergodis)
 

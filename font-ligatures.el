@@ -1,3 +1,5 @@
+;;; font-ligatures.el --- -*- lexical-binding: t; -*-
+
 (use-package ligature
   :load-path "~/.emacs.d/vendor"
   :config

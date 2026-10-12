@@ -1,3 +1,5 @@
+;;; bootstrap.el --- -*- lexical-binding: t; -*-
+
 ;; (package-initialize) ;; for emacs 26
 
 (setq inhibit-startup-message t)

@@ -1,3 +1,5 @@
+;;; yaml.el --- -*- lexical-binding: t; -*-
+
 (use-package yaml-mode
   :ensure t
   :hook (yaml-mode . (lambda ()

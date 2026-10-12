@@ -1,3 +1,5 @@
+;;; python.el --- -*- lexical-binding: t; -*-
+
 (load  (concat (file-name-directory load-file-name) "../vendor/py-yapf.el"))
 (load  (concat (file-name-directory load-file-name) "../vendor/python-isort.el"))
 

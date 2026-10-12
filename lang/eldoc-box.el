@@ -1,3 +1,5 @@
+;;; eldoc-box.el --- -*- lexical-binding: t; -*-
+
 (use-package eldoc-box
   :ensure t
   :init

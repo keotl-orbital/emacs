@@ -1,3 +1,5 @@
+;;; spelling.el --- -*- lexical-binding: t; -*-
+
 (setq ispell-program-name "aspell")
 (setq ispell-extra-args '("--camel-case" "--sug-mode=ultra" "--run-together-limit=2"))
 (eval-after-load "flyspell"

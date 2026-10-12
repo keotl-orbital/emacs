@@ -1,3 +1,5 @@
+;;; apps.el --- -*- lexical-binding: t; -*-
+
 (use-package vterm
   :ensure t
   :bind (:map vterm-mode-map

@@ -1,3 +1,5 @@
+;;; init.el --- -*- lexical-binding: t; -*-
+
 (use-package eglot
   :bind
   (:map evil-normal-state-map

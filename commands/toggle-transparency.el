@@ -1,3 +1,5 @@
+;;; toggle-transparency.el --- -*- lexical-binding: t; -*-
+
 (defun toggle-transparency ()
   (interactive)
   (let* ((current-alpha (or (frame-parameter nil 'alpha-background) 100))

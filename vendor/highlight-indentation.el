@@ -1,4 +1,4 @@
-;;; highlight-indentation.el --- Minor modes for highlighting indentation
+;;; highlight-indentation.el --- Minor modes for highlighting indentation  -*- lexical-binding: t; -*-
 ;; Author: Anton Johansson <anton.johansson@gmail.com> - http://antonj.se
 ;; Created: Dec 15 23:42:04 2010
 ;; Version: 0.7.0

@@ -1,3 +1,5 @@
+;;; find-test-file.el --- -*- lexical-binding: t; -*-
+
 (defvar test-file-name-transforms-alist
   '((".*\\.tsx?$" . (lambda (file-name)
 		      (let* ((edited1 (replace-regexp-in-string "\\/src\\/" "/test/" file-name))

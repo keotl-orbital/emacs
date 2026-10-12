@@ -1,3 +1,5 @@
+;;; vcs.el --- -*- lexical-binding: t; -*-
+
 (use-package magit
   :ensure t
   :config

@@ -1,4 +1,4 @@
-;;; py-yapf.el --- Use yapf to beautify a Python buffer
+;;; py-yapf.el --- Use yapf to beautify a Python buffer  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2015-2016, Friedrich Paetzke <f.paetzke@gmail.com>
 

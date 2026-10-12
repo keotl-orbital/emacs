@@ -1,3 +1,5 @@
+;;; clang.el --- -*- lexical-binding: t; -*-
+
 ;; apt install clangd bear
 
 ;; C

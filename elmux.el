@@ -249,6 +249,7 @@ each state file gets its own watch to catch content overwrites.")
   (unless (memq 'elmux--workspace-indicator global-mode-string)
     (setq global-mode-string
           (append global-mode-string '(elmux--workspace-indicator))))
+  (advice-add 'tab-bar-select-tab :before #'elmux--leave-side-window)
   (if (boundp 'tab-bar-tab-post-select-functions)
       (add-hook 'tab-bar-tab-post-select-functions #'elmux--sidebar-sync)
     (advice-add 'tab-bar-select-tab :after #'elmux--sidebar-sync))
@@ -340,10 +341,11 @@ each state file gets its own watch to catch content overwrites.")
 (defun elmux-new-session ()
   (interactive)
   (let ((starter (pcase (completing-read
-                         "Tool: " '("claude" "codex" "opencode" "aider" "fish") nil t)
+                         "Tool: " '("claude" "codex" "opencode" "pi" "aider" "fish") nil t)
                    ("claude" 'start-claude-vterm)
                    ("codex" 'start-codex-vterm)
                    ("opencode" 'start-opencode-vterm)
+                   ("pi" 'start-pi-vterm)
                    ("aider" 'start-aider-vterm)
                    ("fish" 'start-vterm-default))))
     (if (fboundp starter)
@@ -541,26 +543,31 @@ Notification, otherwise identically to claude)."
   (expand-file-name "~/.config/opencode/plugins/elmux-status.js")
   "Where the status plugin is installed; opencode auto-loads this directory.")
 
-(defun elmux-install-opencode-hooks ()
-  "Install the elmux status plugin into ~/.config/opencode/plugins/.
-Opencode has no JSON hooks file like claude and codex, so state is
-reported from a plugin.  Files in the plugins directory are auto-loaded
-at startup, so no opencode.jsonc entry is needed."
-  (interactive)
-  (unless (file-exists-p elmux-opencode-plugin-source)
-    (user-error "Plugin source missing: %s" elmux-opencode-plugin-source))
-  (let ((source (with-temp-buffer
-                  (insert-file-contents elmux-opencode-plugin-source)
-                  (buffer-string)))
-        (target elmux-opencode-plugin-target))
+(defvar elmux-pi-extension-source
+  (expand-file-name "elmux-pi-extension.ts" user-emacs-directory)
+  "The elmux pi status extension shipped alongside elmux.el.")
+
+(defvar elmux-pi-extension-target
+  (expand-file-name "~/.pi/agent/extensions/elmux-status.ts")
+  "Where the status extension is installed; pi auto-loads this directory.")
+
+(defun elmux--install-plugin-file (source target buffer-name)
+  "Copy plugin SOURCE to TARGET after previewing it in BUFFER-NAME.
+No-op when TARGET already holds SOURCE's contents; otherwise asks for
+confirmation and backs up any existing TARGET first."
+  (unless (file-exists-p source)
+    (user-error "Plugin source missing: %s" source))
+  (let ((contents (with-temp-buffer
+                    (insert-file-contents source)
+                    (buffer-string))))
     (if (and (file-exists-p target)
-             (string= source (with-temp-buffer
-                               (insert-file-contents target)
-                               (buffer-string))))
-        (message "Opencode plugin already installed")
-      (with-current-buffer (get-buffer-create "*elmux-opencode-plugin*")
+             (string= contents (with-temp-buffer
+                                 (insert-file-contents target)
+                                 (buffer-string))))
+        (message "Plugin already installed in %s" target)
+      (with-current-buffer (get-buffer-create buffer-name)
         (erase-buffer)
-        (insert source)
+        (insert contents)
         (when (fboundp 'js-mode) (js-mode))
         (display-buffer (current-buffer)))
       (when (yes-or-no-p (format "Write this to %s? " target))
@@ -568,9 +575,30 @@ at startup, so no opencode.jsonc entry is needed."
         (when (file-exists-p target)
           (copy-file target (concat target ".bak-"
                                     (format-time-string "%Y%m%d%H%M%S"))))
-        (copy-file elmux-opencode-plugin-source target t)
+        (copy-file source target t)
         (message "Plugin installed into %s; restart running sessions to apply"
                  target)))))
+
+(defun elmux-install-opencode-hooks ()
+  "Install the elmux status plugin into ~/.config/opencode/plugins/.
+Opencode has no JSON hooks file like claude and codex, so state is
+reported from a plugin.  Files in the plugins directory are auto-loaded
+at startup, so no opencode.jsonc entry is needed."
+  (interactive)
+  (elmux--install-plugin-file elmux-opencode-plugin-source
+                              elmux-opencode-plugin-target
+                              "*elmux-opencode-plugin*"))
+
+(defun elmux-install-pi-hooks ()
+  "Install the elmux status extension into ~/.pi/agent/extensions/.
+Pi has no JSON hooks file like claude and codex, so state is reported
+from an extension.  Files in the extensions directory are auto-loaded
+at startup (or with /reload), so no settings.json entry is needed.
+Pi never prompts for tool permission, so it only reports working/done."
+  (interactive)
+  (elmux--install-plugin-file elmux-pi-extension-source
+                              elmux-pi-extension-target
+                              "*elmux-pi-extension*"))
 
 (require 'tab-bar)
 
@@ -748,10 +776,16 @@ workspace root when the workspace is registered."
   (interactive)
   (elmux--workspace-app "opencode" "opencode"))
 
+(defun elmux-workspace-pi ()
+  "Start or switch to the pi instance of the active workspace."
+  (interactive)
+  (elmux--workspace-app "pi" "pi"))
+
 (defvar elmux-workspace-restore-commands
   '(("claude" . "claude --continue")
     ("codex" . "codex resume --last")
     ("opencode" . "opencode --continue")
+    ("pi" . "pi --continue")
     ("vterm" . nil))
   "Command run when desktop restores a workspace app vterm, keyed by app.
 nil runs no command (plain shell); an unlisted app runs its own name.")
@@ -935,6 +969,15 @@ When nil, restored app vterms are plain shells in the workspace root.")
                     (window-list))))
     (select-window win)))
 
+(defun elmux--leave-side-window (&rest _)
+  "Select a non-side window before a tab switch.
+A tab restored by desktop has no live window configuration, so
+`tab-bar-select-tab' falls back to `window-state-put' on the selected
+window.  When that is the sidebar, it deletes every other window and
+splits the lone side window, which recurses until `max-lisp-eval-depth'."
+  (when (window-parameter (selected-window) 'window-side)
+    (elmux--select-non-side-window)))
+
 (defun elmux--sidebar-act ()
   "Switch to the workspace on the current sidebar line; return non-nil if acted."
   (when-let* ((target (get-text-property (point) 'elmux-target)))
@@ -1079,6 +1122,11 @@ Session workspaces are killed; plain tabs are closed."
   (interactive)
   (elmux--sidebar-visit-app "opencode" "opencode"))
 
+(defun elmux-sidebar-pi ()
+  "Open the pi instance of the workspace at point."
+  (interactive)
+  (elmux--sidebar-visit-app "pi" "pi"))
+
 (defun elmux-sidebar-vterm ()
   "Open the shell vterm of the workspace at point."
   (interactive)
@@ -1089,6 +1137,7 @@ Session workspaces are killed; plain tabs are closed."
 (define-key elmux-sidebar-mode-map (kbd "a c") #'elmux-sidebar-claude)
 (define-key elmux-sidebar-mode-map (kbd "a x") #'elmux-sidebar-codex)
 (define-key elmux-sidebar-mode-map (kbd "a o") #'elmux-sidebar-opencode)
+(define-key elmux-sidebar-mode-map (kbd "a p") #'elmux-sidebar-pi)
 (define-key elmux-sidebar-mode-map (kbd "a t") #'elmux-sidebar-vterm)
 ;;; Tab line
 
@@ -1293,6 +1342,7 @@ reads only cached state and writes nothing.  Never returns nil: an empty
     (kbd "a c") #'elmux-sidebar-claude
     (kbd "a x") #'elmux-sidebar-codex
     (kbd "a o") #'elmux-sidebar-opencode
+    (kbd "a p") #'elmux-sidebar-pi
     (kbd "a t") #'elmux-sidebar-vterm))
 
 (unless noninteractive (elmux-setup))

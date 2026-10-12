@@ -85,6 +85,11 @@ Starts in the project root directory if available."
   (interactive)
   (start-vterm-wrapper-app "opencode"))
 
+(defun start-pi-vterm ()
+  "Start a new vterm instance with pi."
+  (interactive)
+  (start-vterm-wrapper-app "pi"))
+
 (defun start-vterm-default ()
   "Start a new vterm instance with default profile."
   (interactive)
@@ -121,3 +126,17 @@ Starts in the project root directory if available."
       (split-window-right))
   (other-window 1)
   (start-opencode-vterm))
+
+(defun start-pi-vterm-other-window ()
+  "Start a new vterm instance with pi in another window."
+  (interactive)
+  (if (one-window-p)
+      (split-window-right))
+  (other-window 1)
+  (start-pi-vterm))
+
+(use-package agent-shell
+      :ensure t
+      :config
+      ;; (add-to-list 'exec-path "~/.opencode/bin/")
+      )

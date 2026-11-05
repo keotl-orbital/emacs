@@ -62,6 +62,7 @@
   (+layout-bepo-rotate-bare-keymap '(evil-window-map) +layout-bepo-cr-rotation-style)
   (+layout-bepo-rotate-evil-keymap +layout-bepo-cr-rotation-style)
   (define-key evil-insert-state-map (kbd "C-é") evil-window-map)
+  (define-key evil-normal-state-map (kbd "C-é") evil-window-map)
 
   (evil-define-key nil evil-inner-text-objects-map
     "é" 'evil-inner-word
